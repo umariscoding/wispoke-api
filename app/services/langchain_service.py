@@ -359,7 +359,7 @@ def get_company_rag_chain(company_id: str, llm_model: str = "OpenAI") -> Runnabl
                 # Query Pinecone directly
                 results = self._index.query(
                     vector=query_embedding,
-                    top_k=4,
+                    top_k=8,  # Increased from 4 to retrieve more relevant chunks
                     namespace=self._namespace,
                     include_metadata=True
                 )
@@ -473,26 +473,6 @@ async def stream_company_response(company_id: str, query: str, chat_id: str, llm
         if not pinecone_key or pinecone_key == "your-pinecone-api-key-here":
             yield "Error: Pinecone API key not configured. Please create a .env file in the project root and set PINECONE_API_KEY=your-actual-pinecone-key. You can get an API key from https://pinecone.io/"
             return
-            
-        # Check if company has any real knowledge base content
-        try:
-            namespace = get_company_namespace(company_id)
-            index = get_pinecone_client().Index(BASE_INDEX_NAME)
-            stats = index.describe_index_stats()
-            
-            has_content = False
-            if stats.namespaces and namespace in stats.namespaces:
-                vector_count = stats.namespaces[namespace].vector_count
-                has_content = vector_count > 1  # More than just the default fallback message
-                
-            # If no real content, provide helpful message
-            if not has_content:
-                yield "I apologize, but this company hasn't uploaded any knowledge base content yet. I'm unable to provide specific information about their products, services, or policies without proper documentation. Please contact the company directly for assistance, or ask them to upload their knowledge base content to enable me to help you better."
-                return
-                
-        except Exception:
-            # If we can't check, continue with normal flow
-            pass
             
         # Get company-specific RAG chain with comprehensive error handling
         try:
