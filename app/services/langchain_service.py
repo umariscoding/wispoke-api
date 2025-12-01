@@ -1,7 +1,7 @@
 import time
-from langchain_openai import OpenAIEmbeddings
+from langchain_cohere import CohereEmbeddings
 from langchain_pinecone import PineconeVectorStore
-from langchain_openai import ChatOpenAI
+from langchain_groq import ChatGroq
 from pinecone import Pinecone, ServerlessSpec
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.chains import create_history_aware_retriever, create_retrieval_chain
@@ -10,17 +10,22 @@ from langchain_core.chat_history import BaseChatMessageHistory
 from langchain_core.runnables.history import RunnableWithMessageHistory
 from typing import AsyncGenerator, List, Dict, Optional
 from app.core.config import settings, EMBEDDING_MODEL
-import asyncio
 from app.services.prompts import contextualize_q_system_prompt, qa_system_prompt
-from app.db.database import load_session_history, SessionLocal
 from app.services.document_service import split_text_for_txt
-from app.models.models import Document
-from sqlalchemy import update
+from app.db.database import update_document_embeddings_status, load_session_history
 
 # Only raise errors when the services are actually used, not at import time
 def check_openai_key():
     if not settings.openai_api_key:
         raise ValueError("OpenAI API key is not set in the environment variables.")
+
+def check_cohere_key():
+    if not settings.cohere_api_key:
+        raise ValueError("Cohere API key is not set in the environment variables.")
+
+def check_groq_key():
+    if not settings.groq_api_key:
+        raise ValueError("Groq API key is not set in the environment variables.")
 
 def check_pinecone_key():
     if not settings.pinecone_api_key:
@@ -30,8 +35,16 @@ def get_openai_api_key():
     """Get the current OpenAI API key from settings."""
     return settings.openai_api_key
 
+def get_cohere_api_key():
+    """Get the current Cohere API key from settings."""
+    return settings.cohere_api_key
+
+def get_groq_api_key():
+    """Get the current Groq API key from settings."""
+    return settings.groq_api_key
+
 def get_pinecone_api_key():
-    """Get the current Pinecone API key from settings."""  
+    """Get the current Pinecone API key from settings."""
     return settings.pinecone_api_key
 
 # Initialize Pinecone (lazy initialization)
@@ -74,10 +87,10 @@ def ensure_base_index_exists():
         if BASE_INDEX_NAME not in existing_indexes:
             get_pinecone_client().create_index(
                 name=BASE_INDEX_NAME,
-                dimension=1536,  # OpenAI text-embedding-3-small dimension (same as ada-002)
+                dimension=1024,  # Cohere embed-english-v3.0 dimension
                 metric="cosine",  # Best for text similarity
                 spec=ServerlessSpec(
-                    cloud="aws", 
+                    cloud="aws",
                     region="us-east-1"
                 ),
             )
@@ -111,14 +124,14 @@ def create_company_vector_store(company_id: str, doc_chunks: List[str]) -> Pinec
     
     # Get company namespace
     namespace = get_company_namespace(company_id)
-    
-    # Create embeddings
-    check_openai_key()
-    embedding_function = OpenAIEmbeddings(
+
+    # Create embeddings with Cohere
+    check_cohere_key()
+    embedding_function = CohereEmbeddings(
         model=EMBEDDING_MODEL,
-        openai_api_key=get_openai_api_key()
+        cohere_api_key=get_cohere_api_key()
     )
-    
+
     # Create vector store with company-specific namespace using best practices
     try:
         # Use optimized configuration for document creation
@@ -164,14 +177,14 @@ def get_company_vector_store(company_id: str) -> PineconeVectorStore:
     
     # Get company namespace
     namespace = get_company_namespace(company_id)
-    
-    # Create embeddings
-    check_openai_key()
-    embedding_function = OpenAIEmbeddings(
+
+    # Create embeddings with Cohere
+    check_cohere_key()
+    embedding_function = CohereEmbeddings(
         model=EMBEDDING_MODEL,
-        openai_api_key=get_openai_api_key()
+        cohere_api_key=get_cohere_api_key()
     )
-    
+
     # Create vector store connection with company-specific namespace
     # Use explicit index reference for consistent connections
     pinecone_index = get_pinecone_client().Index(BASE_INDEX_NAME)
@@ -198,76 +211,57 @@ def setup_company_knowledge_base(company_id: str, doc_chunks: List[str]):
     result = create_company_vector_store(company_id, doc_chunks)
     return result
 
-def process_company_document(company_id: str, document_content: str, doc_id: Optional[str] = None) -> bool:
+async def process_company_document(company_id: str, document_content: str, doc_id: Optional[str] = None) -> bool:
     """
     Process a document for a company's knowledge base.
-    
+
     Args:
         company_id (str): Company ID
         document_content (str): Document content to process
         doc_id (str, optional): Document ID for tracking
-    
+
     Returns:
         bool: True if processing was successful
     """
     try:
         # Split document into chunks
         doc_chunks = split_text_for_txt(document_content)
-        
+
         # Get or create company vector store
         vector_store = get_company_vector_store(company_id)
-        
+
         # Add document chunks to vector store with metadata
         metadatas = [
             {
                 "source": f"document_{doc_id}" if doc_id else "uploaded_document",
                 "chunk_id": i,
                 "company_id": company_id
-            } 
+            }
             for i in range(len(doc_chunks))
         ]
-        
+
         vector_store.add_texts(texts=doc_chunks, metadatas=metadatas)
-        
+
         # Clear RAG chain cache for this company to force refresh
         clear_company_cache(company_id)
-        
+
         # Update document status if doc_id is provided
         if doc_id:
-            db = SessionLocal()
             try:
-                db.execute(
-                    update(Document).where(
-                        Document.doc_id == doc_id
-                    ).values(embeddings_status='completed')
-                )
-                db.commit()
+                await update_document_embeddings_status(doc_id, 'completed')
             except Exception:
-                db.rollback()
-            finally:
-                db.close()
-        
+                pass
+
         return True
-        
+
     except Exception as e:
         # Update document status to failed if doc_id is provided
         if doc_id:
             try:
-                db = SessionLocal()
-                try:
-                    db.execute(
-                        update(Document).where(
-                            Document.doc_id == doc_id
-                        ).values(embeddings_status='failed')
-                    )
-                    db.commit()
-                except Exception:
-                    db.rollback()
-                finally:
-                    db.close()
+                await update_document_embeddings_status(doc_id, 'failed')
             except Exception:
                 pass
-        
+
         return False
 
 def clear_company_knowledge_base(company_id: str):
@@ -293,7 +287,7 @@ def clear_company_knowledge_base(company_id: str):
     except Exception as e:
         return False
 
-def get_company_rag_chain(company_id: str, llm_model: str = "OpenAI") -> RunnableWithMessageHistory:
+def get_company_rag_chain(company_id: str, llm_model: str = "Groq") -> RunnableWithMessageHistory:
     """
     Get or create a company-specific RAG chain.
     
@@ -317,9 +311,9 @@ def get_company_rag_chain(company_id: str, llm_model: str = "OpenAI") -> Runnabl
     # Create fresh vector store for reliable connections
     ensure_base_index_exists()
     namespace = get_company_namespace(company_id)
-    check_openai_key()
-    openai_api_key = get_openai_api_key()
-    embedding_function = OpenAIEmbeddings(model=EMBEDDING_MODEL, openai_api_key=openai_api_key)
+    check_cohere_key()
+    cohere_api_key = get_cohere_api_key()
+    embedding_function = CohereEmbeddings(model=EMBEDDING_MODEL, cohere_api_key=cohere_api_key)
     pinecone_index = get_pinecone_client().Index(BASE_INDEX_NAME)
     
     # Fix the vector store wrapper issue by ensuring proper initialization
@@ -334,36 +328,38 @@ def get_company_rag_chain(company_id: str, llm_model: str = "OpenAI") -> Runnabl
     from langchain_core.retrievers import BaseRetriever
     from langchain_core.documents import Document
     from langchain_core.callbacks import CallbackManagerForRetrieverRun
-    from typing import List
-    
+    from typing import List, Any
+    from pydantic import Field
+
     class DirectPineconeRetriever(BaseRetriever):
         """Custom retriever that uses direct Pinecone queries for reliable document retrieval."""
-        
-        def __init__(self, pinecone_index, embedding_function, namespace):
-            super().__init__()
-            self._index = pinecone_index
-            self._embedding_function = embedding_function
-            self._namespace = namespace
-        
+
+        pinecone_index: Any = Field(description="Pinecone index object")
+        embedding_function: Any = Field(description="Embedding function")
+        namespace: str = Field(description="Pinecone namespace")
+
+        class Config:
+            arbitrary_types_allowed = True
+
         def _get_relevant_documents(
-            self, 
-            query: str, 
-            *, 
+            self,
+            query: str,
+            *,
             run_manager: CallbackManagerForRetrieverRun
         ) -> List[Document]:
             """Retrieve documents relevant to the query."""
             try:
                 # Generate embedding for the query
-                query_embedding = self._embedding_function.embed_query(query)
-                
+                query_embedding = self.embedding_function.embed_query(query)
+
                 # Query Pinecone directly
-                results = self._index.query(
+                results = self.pinecone_index.query(
                     vector=query_embedding,
                     top_k=8,  # Increased from 4 to retrieve more relevant chunks
-                    namespace=self._namespace,
+                    namespace=self.namespace,
                     include_metadata=True
                 )
-                
+
                 # Convert results to LangChain documents
                 documents = []
                 for match in results.matches:
@@ -378,21 +374,35 @@ def get_company_rag_chain(company_id: str, llm_model: str = "OpenAI") -> Runnabl
                                 }
                             )
                             documents.append(doc)
-                
+
                 return documents
-                
+
             except Exception as e:
                 return []
-    
+
     # Use custom retriever for reliable document retrieval
-    retriever = DirectPineconeRetriever(pinecone_index, embedding_function, namespace)
-    
-    # Create LLM (using OpenAI only)
-    if llm_model == "OpenAI":
+    retriever = DirectPineconeRetriever(
+        pinecone_index=pinecone_index,
+        embedding_function=embedding_function,
+        namespace=namespace
+    )
+
+    # Create LLM (using Groq with deepseek-r1-distill-llama-70b)
+    if llm_model == "Groq":
+        check_groq_key()
+        groq_api_key = get_groq_api_key()
+        llm = ChatGroq(
+            model="llama-3.1-8b-instant",
+            api_key=groq_api_key,
+            temperature=0.7
+        )
+    elif llm_model == "OpenAI":
         check_openai_key()
+        openai_api_key = get_openai_api_key()
+        from langchain_openai import ChatOpenAI
         llm = ChatOpenAI(openai_api_key=openai_api_key)
     else:
-        raise ValueError(f"Model {llm_model} not available. Only OpenAI is supported.")
+        raise ValueError(f"Model {llm_model} not available. Only Groq and OpenAI are supported.")
     
     # Create prompts
     contextualize_q_prompt = ChatPromptTemplate.from_messages([
@@ -446,46 +456,51 @@ def get_company_rag_chain(company_id: str, llm_model: str = "OpenAI") -> Runnabl
     
     return conversational_rag_chain
 
-async def stream_company_response(company_id: str, query: str, chat_id: str, llm_model: str = "OpenAI") -> AsyncGenerator[str, None]:
+async def stream_company_response(company_id: str, query: str, chat_id: str, llm_model: str = "Groq") -> AsyncGenerator[str, None]:
     """
     Stream response from company-specific RAG chain.
-    
+
     Args:
         company_id (str): Company ID
         query (str): User query
         chat_id (str): Chat ID
-        llm_model (str): LLM model to use
-        
+        llm_model (str): LLM model to use (default: Groq)
+
     Yields:
         str: Response chunks
     """
     try:
-        # Check if OpenAI API key is available
-        openai_key = get_openai_api_key()
-        
-        if not openai_key or openai_key == "your-openai-api-key-here":
-            yield "Error: OpenAI API key not configured. Please create a .env file in the project root and set OPENAI_API_KEY=your-actual-openai-key. You can get an API key from https://platform.openai.com/api-keys"
-            return
-            
+        # Check API keys based on the model
+        if llm_model == "Groq":
+            groq_key = get_groq_api_key()
+            if not groq_key or groq_key == "your-groq-api-key-here":
+                yield "Error: Groq API key not configured. Please create a .env file in the project root and set GROQ_API_KEY=your-actual-groq-key. You can get an API key from https://console.groq.com/"
+                return
+        elif llm_model == "OpenAI":
+            openai_key = get_openai_api_key()
+            if not openai_key or openai_key == "your-openai-api-key-here":
+                yield "Error: OpenAI API key not configured. Please create a .env file in the project root and set OPENAI_API_KEY=your-actual-openai-key. You can get an API key from https://platform.openai.com/api-keys"
+                return
+
         # Check if Pinecone API key is available
         pinecone_key = get_pinecone_api_key()
-        
+
         if not pinecone_key or pinecone_key == "your-pinecone-api-key-here":
             yield "Error: Pinecone API key not configured. Please create a .env file in the project root and set PINECONE_API_KEY=your-actual-pinecone-key. You can get an API key from https://pinecone.io/"
             return
-            
+
         # Get company-specific RAG chain with comprehensive error handling
         try:
             rag_chain = get_company_rag_chain(company_id, llm_model)
         except Exception as chain_error:
             error_msg = str(chain_error)
-            
+
             # Provide specific error messages based on error type
             if "unsupported operand" in error_msg.lower():
                 yield "Error: Internal retriever compatibility issue. Please try again or contact support."
             elif "pinecone" in error_msg.lower():
-                yield "Error: Knowledge base connection failed. Please ensure documents are uploaded."
-            elif "openai" in error_msg.lower() or "api" in error_msg.lower():
+                yield f"Error: Knowledge base connection failed. Please ensure documents are uploaded."
+            elif "groq" in error_msg.lower() or "openai" in error_msg.lower() or "api" in error_msg.lower():
                 yield "Error: AI service connection failed. Please check API configuration."
             else:
                 yield f"Error: Failed to initialize chat system. Details: {error_msg}"

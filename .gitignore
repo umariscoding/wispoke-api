@@ -1,7 +1,7 @@
 # Environment files
 .env
 app/.env
-
+.json
 # Python
 __pycache__/
 *.py[cod]

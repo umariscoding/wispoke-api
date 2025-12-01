@@ -371,64 +371,101 @@ async def upload_document(
     user: UserContext = Depends(get_current_company)
 ):
     """
-    Upload a text document to the company's knowledge base.
+    Upload a document (PDF, TXT, or DOCX) to the company's knowledge base.
     Only accessible by company users.
     """
     try:
+        from app.services.document_service import (
+            validate_file_type,
+            extract_text_from_file,
+            upload_file_to_supabase
+        )
+
         # Validate file type
-        if not file.content_type or not file.content_type.startswith('text/'):
+        if not validate_file_type(file.filename or "", file.content_type or ""):
             raise HTTPException(
-                status_code=400, 
-                detail="Only text files are supported"
+                status_code=400,
+                detail="Unsupported file type. Only PDF, TXT, and DOCX files are supported."
             )
-        
+
         # Validate file size (max 10MB)
-        content = await file.read()
-        if len(content) > 10 * 1024 * 1024:  # 10MB limit
+        file_content = await file.read()
+        if len(file_content) > 10 * 1024 * 1024:  # 10MB limit
             raise HTTPException(
                 status_code=400,
                 detail="File size too large. Maximum 10MB allowed."
             )
-        
-        # Decode content
-        try:
-            text_content = content.decode('utf-8')
-        except UnicodeDecodeError:
-            raise HTTPException(
-                status_code=400,
-                detail="File must be valid UTF-8 text"
-            )
-        
+
         # Get or create knowledge base
         kb = await get_or_create_knowledge_base(user.company_id)
-        
-        # Save document to database
+
+        # Generate document ID first (needed for file path)
+        from app.db.database import generate_id
+        doc_id = generate_id()
+
+        # Upload file to Supabase storage
+        try:
+            file_url = await upload_file_to_supabase(
+                file_content=file_content,
+                filename=file.filename or "document.txt",
+                company_id=user.company_id,
+                doc_id=doc_id
+            )
+        except Exception as upload_error:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to upload file to storage: {str(upload_error)}"
+            )
+
+        # Extract text content from file
+        try:
+            text_content = await extract_text_from_file(
+                file_content=file_content,
+                filename=file.filename or "document.txt",
+                content_type=file.content_type or "text/plain"
+            )
+        except Exception as extract_error:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to extract text from file: {str(extract_error)}"
+            )
+
+        # Save document to database with file URL
         document = await save_document(
             kb_id=kb["kb_id"],
             filename=file.filename or "document.txt",
             content=text_content,
-            content_type=file.content_type or "text/plain"
+            content_type=file.content_type or "text/plain",
+            file_url=file_url
         )
-        
+
+        # Update the document with the generated doc_id
+        from app.db.database import db
+        db.table("documents").update({"doc_id": doc_id}).eq("doc_id", document["doc_id"]).execute()
+        document["doc_id"] = doc_id
+
         # Process document in background
-        success = process_company_document(
+        success = await process_company_document(
             company_id=user.company_id,
             document_content=text_content,
-            doc_id=document["doc_id"]
+            doc_id=doc_id
         )
-        
+
         if not success:
             raise HTTPException(
                 status_code=500,
                 detail="Failed to process document"
             )
-        
+
         return {
             "message": "Document uploaded and processed successfully",
-            "document": document,
+            "document": {
+                **document,
+                "file_url": file_url
+            },
             "knowledge_base": kb
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -466,7 +503,7 @@ async def upload_text_content(
         )
         
         # Process document
-        success = process_company_document(
+        success = await process_company_document(
             company_id=user.company_id,
             document_content=document_data.content,
             doc_id=document["doc_id"]

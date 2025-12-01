@@ -1,0 +1,1444 @@
+{
+	"info": {
+		"_postman_id": "chatelio-api-collection",
+		"name": "Chatelio API Collection",
+		"description": "Complete API collection for Chatelio - Multi-tenant Chatbot Platform",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"auth": {
+		"type": "bearer",
+		"bearer": [
+			{
+				"key": "token",
+				"value": "{{access_token}}",
+				"type": "string"
+			}
+		]
+	},
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:8000",
+			"type": "string"
+		},
+		{
+			"key": "access_token",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "refresh_token",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "company_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "chat_id",
+			"value": "",
+			"type": "string"
+		}
+	],
+	"item": [
+		{
+			"name": "Root",
+			"item": [
+				{
+					"name": "Health Check",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/",
+							"host": ["{{base_url}}"],
+							"path": [""]
+						},
+						"description": "Root endpoint for health checking and basic API info"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Authentication",
+			"item": [
+				{
+					"name": "Company Register",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    var jsonData = pm.response.json();",
+									"    pm.collectionVariables.set('access_token', jsonData.access_token);",
+									"    pm.collectionVariables.set('refresh_token', jsonData.refresh_token);",
+									"    pm.collectionVariables.set('company_id', jsonData.company.id);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"name\": \"Test Company\",\n    \"email\": \"company@example.com\",\n    \"password\": \"SecurePassword123\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/auth/company/register",
+							"host": ["{{base_url}}"],
+							"path": ["auth", "company", "register"]
+						},
+						"description": "Register a new company account"
+					},
+					"response": []
+				},
+				{
+					"name": "Company Login",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    var jsonData = pm.response.json();",
+									"    pm.collectionVariables.set('access_token', jsonData.access_token);",
+									"    pm.collectionVariables.set('refresh_token', jsonData.refresh_token);",
+									"    pm.collectionVariables.set('company_id', jsonData.company.id);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"email\": \"company@example.com\",\n    \"password\": \"SecurePassword123\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/auth/company/login",
+							"host": ["{{base_url}}"],
+							"path": ["auth", "company", "login"]
+						},
+						"description": "Authenticate a company and return tokens"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Company Profile",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/auth/company/profile",
+							"host": ["{{base_url}}"],
+							"path": ["auth", "company", "profile"]
+						},
+						"description": "Get authenticated company's profile information"
+					},
+					"response": []
+				},
+				{
+					"name": "Refresh Token",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    var jsonData = pm.response.json();",
+									"    pm.collectionVariables.set('access_token', jsonData.access_token);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"refresh_token\": \"{{refresh_token}}\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/auth/refresh",
+							"host": ["{{base_url}}"],
+							"path": ["auth", "refresh"]
+						},
+						"description": "Refresh access token using refresh token"
+					},
+					"response": []
+				},
+				{
+					"name": "Verify Token",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/auth/verify",
+							"host": ["{{base_url}}"],
+							"path": ["auth", "verify"]
+						},
+						"description": "Verify and decode a JWT token"
+					},
+					"response": []
+				},
+				{
+					"name": "Company Logout",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/auth/company/logout",
+							"host": ["{{base_url}}"],
+							"path": ["auth", "company", "logout"]
+						},
+						"description": "Logout a company (client-side token invalidation)"
+					},
+					"response": []
+				},
+				{
+					"name": "Update Company Slug",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"slug\": \"my-company-chatbot\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/auth/company/slug",
+							"host": ["{{base_url}}"],
+							"path": ["auth", "company", "slug"]
+						},
+						"description": "Update company slug for public chatbot URL"
+					},
+					"response": []
+				},
+				{
+					"name": "Publish/Unpublish Chatbot",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"is_published\": true\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/auth/company/publish-chatbot",
+							"host": ["{{base_url}}"],
+							"path": ["auth", "company", "publish-chatbot"]
+						},
+						"description": "Publish or unpublish company chatbot"
+					},
+					"response": []
+				},
+				{
+					"name": "Update Chatbot Info",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"chatbot_title\": \"My Awesome Chatbot\",\n    \"chatbot_description\": \"This chatbot helps you with customer support\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/auth/company/chatbot-info",
+							"host": ["{{base_url}}"],
+							"path": ["auth", "company", "chatbot-info"]
+						},
+						"description": "Update company chatbot title and description"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Chatbot Status",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/auth/company/chatbot-status",
+							"host": ["{{base_url}}"],
+							"path": ["auth", "company", "chatbot-status"]
+						},
+						"description": "Get current chatbot publishing status"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Company Users",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/auth/company/users",
+							"host": ["{{base_url}}"],
+							"path": ["auth", "company", "users"]
+						},
+						"description": "Get all users for the current company (company admin only)"
+					},
+					"response": []
+				},
+				{
+					"name": "Auth Health Check",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/auth/health",
+							"host": ["{{base_url}}"],
+							"path": ["auth", "health"]
+						},
+						"description": "Health check endpoint for authentication service"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "User Management",
+			"item": [
+				{
+					"name": "Create Guest Session",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    var jsonData = pm.response.json();",
+									"    pm.collectionVariables.set('access_token', jsonData.access_token);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"company_id\": \"{{company_id}}\",\n    \"ip_address\": \"192.168.1.1\",\n    \"user_agent\": \"Mozilla/5.0\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/users/guest/create",
+							"host": ["{{base_url}}"],
+							"path": ["users", "guest", "create"]
+						},
+						"description": "Create a new guest session for anonymous users"
+					},
+					"response": []
+				},
+				{
+					"name": "User Register",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    var jsonData = pm.response.json();",
+									"    pm.collectionVariables.set('access_token', jsonData.access_token);",
+									"    pm.collectionVariables.set('refresh_token', jsonData.refresh_token);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"email\": \"user@example.com\",\n    \"password\": \"UserPassword123\",\n    \"name\": \"John Doe\",\n    \"company_id\": \"{{company_id}}\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/users/register",
+							"host": ["{{base_url}}"],
+							"path": ["users", "register"]
+						},
+						"description": "Register a new user for a company"
+					},
+					"response": []
+				},
+				{
+					"name": "User Login",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"if (pm.response.code === 200) {",
+									"    var jsonData = pm.response.json();",
+									"    pm.collectionVariables.set('access_token', jsonData.access_token);",
+									"    pm.collectionVariables.set('refresh_token', jsonData.refresh_token);",
+									"}"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"email\": \"user@example.com\",\n    \"password\": \"UserPassword123\",\n    \"company_id\": \"{{company_id}}\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/users/login",
+							"host": ["{{base_url}}"],
+							"path": ["users", "login"]
+						},
+						"description": "Authenticate a user and return tokens"
+					},
+					"response": []
+				},
+				{
+					"name": "Get User Profile",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/users/profile",
+							"host": ["{{base_url}}"],
+							"path": ["users", "profile"]
+						},
+						"description": "Get current user's profile (works for both guests and registered users)"
+					},
+					"response": []
+				},
+				{
+					"name": "Check Session",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/users/session/check",
+							"host": ["{{base_url}}"],
+							"path": ["users", "session", "check"]
+						},
+						"description": "Check if current session/user is still valid"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Company Info by ID",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/users/company/{{company_id}}/info",
+							"host": ["{{base_url}}"],
+							"path": ["users", "company", "{{company_id}}", "info"]
+						},
+						"description": "Get company information (users can only access their own company's info)"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Company Users by ID",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/users/company/{{company_id}}/users",
+							"host": ["{{base_url}}"],
+							"path": ["users", "company", "{{company_id}}", "users"]
+						},
+						"description": "Get all users for a specific company (only company admins)"
+					},
+					"response": []
+				},
+				{
+					"name": "Users Health Check",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/users/health",
+							"host": ["{{base_url}}"],
+							"path": ["users", "health"]
+						},
+						"description": "Health check endpoint for user management service"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Chat",
+			"item": [
+				{
+					"name": "Send Chat Message",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"// Note: This endpoint returns a streaming response (SSE)",
+									"// The response will be in text/event-stream format"
+								],
+								"type": "text/javascript"
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"message\": \"What are your business hours?\",\n    \"chat_id\": \"{{chat_id}}\",\n    \"chat_title\": \"New Conversation\",\n    \"model\": \"OpenAI\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/chat/send",
+							"host": ["{{base_url}}"],
+							"path": ["chat", "send"]
+						},
+						"description": "Send a message to the chatbot and get a streaming response"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Chat History",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/chat/history/{{chat_id}}",
+							"host": ["{{base_url}}"],
+							"path": ["chat", "history", "{{chat_id}}"]
+						},
+						"description": "Get chat history for a specific chat"
+					},
+					"response": []
+				},
+				{
+					"name": "List All Chats",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/chat/list",
+							"host": ["{{base_url}}"],
+							"path": ["chat", "list"]
+						},
+						"description": "List all chats for the current user/guest session"
+					},
+					"response": []
+				},
+				{
+					"name": "Update Chat Title",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "PUT",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"title\": \"Updated Chat Title\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/chat/title/{{chat_id}}",
+							"host": ["{{base_url}}"],
+							"path": ["chat", "title", "{{chat_id}}"]
+						},
+						"description": "Update the title of a chat"
+					},
+					"response": []
+				},
+				{
+					"name": "Delete Chat",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/chat/{{chat_id}}",
+							"host": ["{{base_url}}"],
+							"path": ["chat", "{{chat_id}}"]
+						},
+						"description": "Delete a chat"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Company Info",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/chat/company-info",
+							"host": ["{{base_url}}"],
+							"path": ["chat", "company-info"]
+						},
+						"description": "Get information about the current company"
+					},
+					"response": []
+				},
+				{
+					"name": "Upload Document",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "file",
+									"type": "file",
+									"src": "/path/to/document.txt"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{base_url}}/chat/upload-document",
+							"host": ["{{base_url}}"],
+							"path": ["chat", "upload-document"]
+						},
+						"description": "Upload a text document to the company's knowledge base"
+					},
+					"response": []
+				},
+				{
+					"name": "Upload Text",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"content\": \"This is my company's FAQ content. Q: What are your hours? A: We are open 9-5 Monday to Friday.\",\n    \"filename\": \"faq.txt\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/chat/upload-text",
+							"host": ["{{base_url}}"],
+							"path": ["chat", "upload-text"]
+						},
+						"description": "Upload text content directly to the company's knowledge base"
+					},
+					"response": []
+				},
+				{
+					"name": "List Documents",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/chat/documents",
+							"host": ["{{base_url}}"],
+							"path": ["chat", "documents"]
+						},
+						"description": "List all documents in the company's knowledge base"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Knowledge Base Info",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/chat/knowledge-base",
+							"host": ["{{base_url}}"],
+							"path": ["chat", "knowledge-base"]
+						},
+						"description": "Get knowledge base information for the company"
+					},
+					"response": []
+				},
+				{
+					"name": "Delete Document",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/chat/documents/:doc_id",
+							"host": ["{{base_url}}"],
+							"path": ["chat", "documents", ":doc_id"],
+							"variable": [
+								{
+									"key": "doc_id",
+									"value": "document-id-here"
+								}
+							]
+						},
+						"description": "Delete a document from the company's knowledge base"
+					},
+					"response": []
+				},
+				{
+					"name": "Clear Knowledge Base",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/chat/clear-knowledge-base",
+							"host": ["{{base_url}}"],
+							"path": ["chat", "clear-knowledge-base"]
+						},
+						"description": "Clear all content from the company's knowledge base"
+					},
+					"response": []
+				},
+				{
+					"name": "Clear RAG Cache",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/chat/clear-rag-cache",
+							"host": ["{{base_url}}"],
+							"path": ["chat", "clear-rag-cache"]
+						},
+						"description": "Clear the RAG chain cache for the current company"
+					},
+					"response": []
+				},
+				{
+					"name": "Chat Health Check",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/chat/health",
+							"host": ["{{base_url}}"],
+							"path": ["chat", "health"]
+						},
+						"description": "Health check endpoint for chat service"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Public Chatbot",
+			"item": [
+				{
+					"name": "Subdomain-Based (NEW)",
+					"item": [
+						{
+							"name": "Get Public Chatbot (Subdomain)",
+							"request": {
+								"method": "GET",
+								"header": [
+									{
+										"key": "Host",
+										"value": "kfcchatbot.mysite.com",
+										"description": "Subdomain that identifies the company"
+									}
+								],
+								"url": {
+									"raw": "{{base_url}}/public/",
+									"host": ["{{base_url}}"],
+									"path": ["public", ""]
+								},
+								"description": "Get public chatbot information via subdomain (e.g., kfcchatbot.mysite.com)"
+							},
+							"response": []
+						},
+						{
+							"name": "Send Public Chat Message (Subdomain)",
+							"request": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									},
+									{
+										"key": "Host",
+										"value": "kfcchatbot.mysite.com",
+										"description": "Subdomain that identifies the company"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"message\": \"Hello, I need help with my order\",\n    \"chat_id\": null,\n    \"model\": \"OpenAI\"\n}"
+								},
+								"url": {
+									"raw": "{{base_url}}/public/chat",
+									"host": ["{{base_url}}"],
+									"path": ["public", "chat"]
+								},
+								"description": "Send a message to a subdomain-based public chatbot (streaming response)"
+							},
+							"response": []
+						},
+						{
+							"name": "Get Public Company Info (Subdomain)",
+							"request": {
+								"method": "GET",
+								"header": [
+									{
+										"key": "Host",
+										"value": "kfcchatbot.mysite.com",
+										"description": "Subdomain that identifies the company"
+									}
+								],
+								"url": {
+									"raw": "{{base_url}}/public/info",
+									"host": ["{{base_url}}"],
+									"path": ["public", "info"]
+								},
+								"description": "Get public company information via subdomain"
+							},
+							"response": []
+						}
+					]
+				},
+				{
+					"name": "Path-Based (Backward Compatibility)",
+					"item": [
+						{
+							"name": "Get Public Chatbot (By Slug)",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{base_url}}/public/chatbot/:company_slug",
+									"host": ["{{base_url}}"],
+									"path": ["public", "chatbot", ":company_slug"],
+									"variable": [
+										{
+											"key": "company_slug",
+											"value": "my-company-chatbot"
+										}
+									]
+								},
+								"description": "Get public chatbot information by company slug"
+							},
+							"response": []
+						},
+						{
+							"name": "Send Public Chat Message (By Slug)",
+							"request": {
+								"method": "POST",
+								"header": [
+									{
+										"key": "Content-Type",
+										"value": "application/json"
+									}
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "{\n    \"message\": \"Hello, I need help with my order\",\n    \"chat_id\": null,\n    \"model\": \"OpenAI\"\n}"
+								},
+								"url": {
+									"raw": "{{base_url}}/public/chatbot/:company_slug/chat",
+									"host": ["{{base_url}}"],
+									"path": ["public", "chatbot", ":company_slug", "chat"],
+									"variable": [
+										{
+											"key": "company_slug",
+											"value": "my-company-chatbot"
+										}
+									]
+								},
+								"description": "Send a message to a public chatbot (streaming response)"
+							},
+							"response": []
+						},
+						{
+							"name": "Get Public Company Info (By Slug)",
+							"request": {
+								"method": "GET",
+								"header": [],
+								"url": {
+									"raw": "{{base_url}}/public/company/:company_slug/info",
+									"host": ["{{base_url}}"],
+									"path": ["public", "company", ":company_slug", "info"],
+									"variable": [
+										{
+											"key": "company_slug",
+											"value": "my-company-chatbot"
+										}
+									]
+								},
+								"description": "Get basic public information about a company"
+							},
+							"response": []
+						}
+					]
+				},
+				{
+					"name": "Public Health Check",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/public/health",
+							"host": ["{{base_url}}"],
+							"path": ["public", "health"]
+						},
+						"description": "Health check endpoint for public chatbot service"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Analytics",
+			"item": [
+				{
+					"name": "Get Dashboard Analytics",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/company/analytics/dashboard",
+							"host": ["{{base_url}}"],
+							"path": ["api", "company", "analytics", "dashboard"]
+						},
+						"description": "Get comprehensive dashboard analytics for the company (overview statistics, time series data, user analytics)"
+					},
+					"response": []
+				},
+				{
+					"name": "Get User Analytics",
+					"request": {
+						"auth": {
+							"type": "bearer",
+							"bearer": [
+								{
+									"key": "token",
+									"value": "{{access_token}}",
+									"type": "string"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/api/company/analytics/users",
+							"host": ["{{base_url}}"],
+							"path": ["api", "company", "analytics", "users"]
+						},
+						"description": "Get all users for the company along with their chat and message counts"
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Legacy/Deprecated",
+			"item": [
+				{
+					"name": "Get All Messages (Legacy)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/get-all-messages/:chat_id",
+							"host": ["{{base_url}}"],
+							"path": ["get-all-messages", ":chat_id"],
+							"variable": [
+								{
+									"key": "chat_id",
+									"value": "{{chat_id}}"
+								}
+							]
+						},
+						"description": "[DEPRECATED] Retrieve all messages for a specific chat"
+					},
+					"response": []
+				},
+				{
+					"name": "Get All Chats (Legacy)",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/get-all-chats",
+							"host": ["{{base_url}}"],
+							"path": ["get-all-chats"]
+						},
+						"description": "[DEPRECATED] Retrieve all available chats"
+					},
+					"response": []
+				},
+				{
+					"name": "Edit Chat Title (Legacy)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/edit-chat-title/:chat_id/:new_title",
+							"host": ["{{base_url}}"],
+							"path": ["edit-chat-title", ":chat_id", ":new_title"],
+							"variable": [
+								{
+									"key": "chat_id",
+									"value": "{{chat_id}}"
+								},
+								{
+									"key": "new_title",
+									"value": "New Title"
+								}
+							]
+						},
+						"description": "[DEPRECATED] Update the title of a specific chat"
+					},
+					"response": []
+				},
+				{
+					"name": "Delete Chat (Legacy)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/delete-chat/:chat_id",
+							"host": ["{{base_url}}"],
+							"path": ["delete-chat", ":chat_id"],
+							"variable": [
+								{
+									"key": "chat_id",
+									"value": "{{chat_id}}"
+								}
+							]
+						},
+						"description": "[DEPRECATED] Delete a specific chat"
+					},
+					"response": []
+				},
+				{
+					"name": "Delete All Chats (Legacy)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/delete-all-chats/",
+							"host": ["{{base_url}}"],
+							"path": ["delete-all-chats", ""]
+						},
+						"description": "[DEPRECATED] Delete all chats from the system"
+					},
+					"response": []
+				},
+				{
+					"name": "Save Chat (Legacy)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/save-chat/:chat_id/:chat_name",
+							"host": ["{{base_url}}"],
+							"path": ["save-chat", ":chat_id", ":chat_name"],
+							"variable": [
+								{
+									"key": "chat_id",
+									"value": "{{chat_id}}"
+								},
+								{
+									"key": "chat_name",
+									"value": "My Chat"
+								}
+							]
+						},
+						"description": "[DEPRECATED] Save a new chat with specified ID and name"
+					},
+					"response": []
+				},
+				{
+					"name": "Process TXT (Legacy)",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"question\": \"What are your business hours?\",\n    \"model\": \"OpenAI\",\n    \"chat_id\": \"{{chat_id}}\",\n    \"chat_name\": \"My Chat\"\n}"
+						},
+						"url": {
+							"raw": "{{base_url}}/process-txt/",
+							"host": ["{{base_url}}"],
+							"path": ["process-txt", ""]
+						},
+						"description": "[DEPRECATED] Process a text query using RAG (streaming response)"
+					},
+					"response": []
+				},
+				{
+					"name": "Clear Cache (Legacy)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/clear-cache/",
+							"host": ["{{base_url}}"],
+							"path": ["clear-cache", ""]
+						},
+						"description": "[DEPRECATED] Clear all cached objects for performance optimization"
+					},
+					"response": []
+				},
+				{
+					"name": "Force Refresh Prompts (Legacy)",
+					"request": {
+						"method": "POST",
+						"header": [],
+						"url": {
+							"raw": "{{base_url}}/force-refresh-prompts/",
+							"host": ["{{base_url}}"],
+							"path": ["force-refresh-prompts", ""]
+						},
+						"description": "[DEPRECATED] Force refresh all RAG chains with updated prompts"
+					},
+					"response": []
+				}
+			]
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					""
+				]
+			}
+		}
+	]
+}

@@ -2,15 +2,10 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta, timezone
-from sqlalchemy import text, func
 import time
 
 from app.auth.dependencies import get_current_company, UserContext
-from app.db.database import SessionLocal
-from app.models.models import (
-    Company, CompanyUser, GuestSession, Chat, Message, 
-    KnowledgeBase, Document
-)
+from app.db.database import db
 
 router = APIRouter(prefix="/api/company/analytics", tags=["analytics"])
 
@@ -72,12 +67,12 @@ class AnalyticsDashboard(BaseModel):
 
 def get_company_timezone(company_id: str) -> timezone:
     """
-    Get the timezone for a company. 
+    Get the timezone for a company.
     For now returns UTC, but can be extended to fetch from company settings.
-    
+
     Args:
         company_id: Company identifier
-        
+
     Returns:
         timezone: Company's timezone (currently always UTC)
     """
@@ -92,15 +87,38 @@ def calculate_change(current: int, previous: int) -> ChangeIndicator:
             return ChangeIndicator(value="0%", type="neutral")
         else:
             return ChangeIndicator(value="+100%", type="increase")
-    
+
     change_percent = ((current - previous) / previous) * 100
-    
+
     if change_percent > 0:
         return ChangeIndicator(value=f"+{change_percent:.1f}%", type="increase")
     elif change_percent < 0:
         return ChangeIndicator(value=f"{change_percent:.1f}%", type="decrease")
     else:
         return ChangeIndicator(value="0%", type="neutral")
+
+def count_records_in_period(records: List[Dict], start_date: datetime, end_date: Optional[datetime] = None) -> int:
+    """Count records within a time period."""
+    count = 0
+    for record in records:
+        created_at_str = record.get("created_at")
+        if not created_at_str:
+            continue
+
+        # Parse ISO format datetime
+        try:
+            created_at = datetime.fromisoformat(created_at_str.replace("Z", "+00:00"))
+        except:
+            continue
+
+        if end_date:
+            if start_date <= created_at < end_date:
+                count += 1
+        else:
+            if created_at >= start_date:
+                count += 1
+
+    return count
 
 @router.get("/dashboard")
 async def get_dashboard_analytics(
@@ -111,91 +129,68 @@ async def get_dashboard_analytics(
     Returns overview statistics, time series data, user analytics, and knowledge base metrics.
     """
     start_time = time.time()
-    
-    db = SessionLocal()
+
     try:
         company_id = user.company_id
-        
+
         # Define time periods with proper timezone handling
         tz = get_company_timezone(company_id)
-        
+
         # Get current time in the company's timezone
         now = datetime.now(tz)
-        
+
         # Calculate time periods relative to the target timezone
-        last_30_days = now - timedelta(days=30)
-        last_60_days = now - timedelta(days=60)
         last_7_days = now - timedelta(days=7)
         last_14_days = now - timedelta(days=14)
-        
+
+        # ============================================================================
+        # FETCH ALL DATA
+        # ============================================================================
+
+        # Fetch all messages for the company
+        messages_res = db.table("messages").select("*").eq("company_id", company_id).execute()
+        all_messages = messages_res.data or []
+
+        # Fetch all users for the company
+        users_res = db.table("company_users").select("*").eq("company_id", company_id).execute()
+        all_users = users_res.data or []
+
+        # Fetch all chats for the company
+        chats_res = db.table("chats").select("*").eq("company_id", company_id).eq("is_deleted", False).execute()
+        all_chats = chats_res.data or []
+
+        # Fetch all knowledge bases for the company
+        kb_res = db.table("knowledge_bases").select("*").eq("company_id", company_id).execute()
+        all_kbs = kb_res.data or []
+
+        # Fetch all guest sessions for the company
+        sessions_res = db.table("guest_sessions").select("*").eq("company_id", company_id).execute()
+        all_sessions = sessions_res.data or []
+
         # ============================================================================
         # OVERVIEW STATISTICS
         # ============================================================================
-        
+
         # Total messages (last 7 days vs previous 7 days)
-        current_messages = db.query(func.count(Message.id)).filter(
-            Message.company_id == company_id,
-            Message.created_at >= last_7_days
-        ).scalar() or 0
-        
-        previous_messages = db.query(func.count(Message.id)).filter(
-            Message.company_id == company_id,
-            Message.created_at >= last_14_days,
-            Message.created_at < last_7_days
-        ).scalar() or 0
-        
+        current_messages = count_records_in_period(all_messages, last_7_days)
+        previous_messages = count_records_in_period(all_messages, last_14_days, last_7_days)
+
         # Users registered in last 7 days vs previous 7 days
-        current_users = db.query(func.count(CompanyUser.id)).filter(
-            CompanyUser.company_id == company_id,
-            CompanyUser.created_at >= last_7_days
-        ).scalar() or 0
-        
-        # Previous period users (users registered 7-14 days ago)
-        previous_users = db.query(func.count(CompanyUser.id)).filter(
-            CompanyUser.company_id == company_id,
-            CompanyUser.created_at >= last_14_days,
-            CompanyUser.created_at < last_7_days
-        ).scalar() or 0
-        
+        current_users = count_records_in_period(all_users, last_7_days)
+        previous_users = count_records_in_period(all_users, last_14_days, last_7_days)
+
         # Total chats (last 7 days vs previous 7 days)
-        current_chats = db.query(func.count(Chat.id)).filter(
-            Chat.company_id == company_id,
-            Chat.created_at >= last_7_days,
-            Chat.is_deleted == False
-        ).scalar() or 0
-        
-        previous_chats = db.query(func.count(Chat.id)).filter(
-            Chat.company_id == company_id,
-            Chat.created_at >= last_14_days,
-            Chat.created_at < last_7_days,
-            Chat.is_deleted == False
-        ).scalar() or 0
-        
+        current_chats = count_records_in_period(all_chats, last_7_days)
+        previous_chats = count_records_in_period(all_chats, last_14_days, last_7_days)
+
         # Knowledge bases (last 7 days vs previous 7 days)
-        current_kb = db.query(func.count(KnowledgeBase.id)).filter(
-            KnowledgeBase.company_id == company_id,
-            KnowledgeBase.created_at >= last_7_days
-        ).scalar() or 0
-        
-        previous_kb = db.query(func.count(KnowledgeBase.id)).filter(
-            KnowledgeBase.company_id == company_id,
-            KnowledgeBase.created_at >= last_14_days,
-            KnowledgeBase.created_at < last_7_days
-        ).scalar() or 0
-        
+        current_kb = count_records_in_period(all_kbs, last_7_days)
+        previous_kb = count_records_in_period(all_kbs, last_14_days, last_7_days)
+
         # Guest sessions created in last 7 days vs previous 7 days
-        current_guest_sessions = db.query(func.count(GuestSession.id)).filter(
-            GuestSession.company_id == company_id,
-            GuestSession.created_at >= last_7_days
-        ).scalar() or 0
-        
-        # Previous period guest sessions (created 7-14 days ago)
-        previous_guest_sessions = db.query(func.count(GuestSession.id)).filter(
-            GuestSession.company_id == company_id,
-            GuestSession.created_at >= last_14_days,
-            GuestSession.created_at < last_7_days
-        ).scalar() or 0
-        
+        current_guest_sessions = count_records_in_period(all_sessions, last_7_days)
+        previous_guest_sessions = count_records_in_period(all_sessions, last_14_days, last_7_days)
+
         overview = OverviewStats(
             totalMessages=OverviewCard(
                 count=current_messages,
@@ -218,11 +213,11 @@ async def get_dashboard_analytics(
                 change=calculate_change(current_guest_sessions, previous_guest_sessions)
             )
         )
-        
+
         # ============================================================================
         # TIME SERIES DATA
         # ============================================================================
-        
+
         # Daily message counts for last 7 days
         messages_over_time = []
         for i in range(7):
@@ -232,22 +227,17 @@ async def get_dashboard_analytics(
             day_start = datetime.combine(target_date, datetime.min.time()).replace(tzinfo=tz)
             day_end = day_start + timedelta(days=1)
             day_date = target_date.strftime("%Y-%m-%d")
-            
-            # Total messages (all types)
-            # Note: Assuming database stores timestamps in UTC
-            total_msgs = db.query(func.count(Message.id)).filter(
-                Message.company_id == company_id,
-                Message.created_at >= day_start,
-                Message.created_at < day_end
-            ).scalar() or 0
-            
+
+            # Count messages for this day
+            total_msgs = count_records_in_period(all_messages, day_start, day_end)
+
             messages_over_time.append(MessagesTimePoint(
                 date=day_date,
                 totalMessages=total_msgs
             ))
-        
+
         messages_over_time.reverse()  # Chronological order
-        
+
         # Daily new chat creation for last 7 days
         chats_over_time = []
         for i in range(7):
@@ -257,52 +247,44 @@ async def get_dashboard_analytics(
             day_start = datetime.combine(target_date, datetime.min.time()).replace(tzinfo=tz)
             day_end = day_start + timedelta(days=1)
             day_date = target_date.strftime("%Y-%m-%d")
-            
-            new_chats = db.query(func.count(Chat.id)).filter(
-                Chat.company_id == company_id,
-                Chat.created_at >= day_start,
-                Chat.created_at < day_end,
-                Chat.is_deleted == False
-            ).scalar() or 0
-            
+
+            # Count chats created this day
+            new_chats = count_records_in_period(all_chats, day_start, day_end)
+
             chats_over_time.append(ChatsTimePoint(
                 date=day_date,
                 newChats=new_chats
             ))
-        
+
         chats_over_time.reverse()  # Chronological order
-        
+
         time_series = TimeSeries(
             messagesOverTime=messages_over_time,
             chatsOverTime=chats_over_time
         )
-        
-        # Simplified analytics - only high-level overview and time series
-        
+
         # ============================================================================
         # METADATA
         # ============================================================================
-        
+
         query_time = time.time() - start_time
         metadata = AnalyticsMetadata(
             lastUpdated=now.isoformat(),
             queryExecutionTime=round(query_time, 3),
             companyId=company_id
         )
-        
+
         return AnalyticsDashboard(
             overview=overview,
             timeSeries=time_series,
             metadata=metadata
         )
-        
+
     except Exception as e:
         raise HTTPException(
             status_code=500,
             detail=f"Failed to fetch analytics data: {str(e)}"
         )
-    finally:
-        db.close()
 
 @router.get("/users")
 async def get_company_users_with_stats(
@@ -312,84 +294,67 @@ async def get_company_users_with_stats(
     Get all users for the company along with their chat and message counts.
     Returns detailed user statistics including number of chats and messages per user.
     """
-    start_time = time.time()
-    
-    db = SessionLocal()
     try:
         company_id = user.company_id
-        
-        # Get all users for the company with their stats
-        users_query = db.query(
-            CompanyUser.user_id,
-            CompanyUser.email,
-            CompanyUser.name,
-            CompanyUser.is_anonymous,
-            CompanyUser.created_at,
-            func.count(func.distinct(Chat.chat_id)).label('chat_count'),
-            func.count(Message.id).label('message_count')
-        ).outerjoin(
-            Chat, (Chat.user_id == CompanyUser.user_id) & (Chat.is_deleted == False)
-        ).outerjoin(
-            Message, Message.chat_id == Chat.chat_id
-        ).filter(
-            CompanyUser.company_id == company_id
-        ).group_by(
-            CompanyUser.user_id,
-            CompanyUser.email,
-            CompanyUser.name,
-            CompanyUser.is_anonymous,
-            CompanyUser.created_at
-        ).order_by(
-            CompanyUser.created_at.desc()
-        ).all()
-        
-        # Format user data
+
+        # Get all users for the company
+        users_res = db.table("company_users").select("*").eq("company_id", company_id).execute()
+        all_users = users_res.data or []
+
+        # Get all chats for the company
+        chats_res = db.table("chats").select("*").eq("company_id", company_id).eq("is_deleted", False).execute()
+        all_chats = chats_res.data or []
+
+        # Get all messages for the company
+        messages_res = db.table("messages").select("*").eq("company_id", company_id).execute()
+        all_messages = messages_res.data or []
+
+        # Calculate stats per user
         users_with_stats = []
-        for user_data in users_query:
+        total_chats = 0
+        total_messages = 0
+
+        for user_data in all_users:
+            user_id = user_data["user_id"]
+            is_anonymous = user_data.get("is_anonymous", False)
+
+            # Count chats for this user
+            chat_count = sum(1 for chat in all_chats if chat.get("user_id") == user_id)
+
+            # Get chat IDs for this user
+            user_chat_ids = [chat["chat_id"] for chat in all_chats if chat.get("user_id") == user_id]
+
+            # Count messages in user's chats
+            message_count = sum(1 for msg in all_messages if msg.get("chat_id") in user_chat_ids)
+
+            # Add to totals only for non-anonymous users
+            if not is_anonymous:
+                total_chats += chat_count
+                total_messages += message_count
+
             users_with_stats.append(UserWithStats(
-                user_id=user_data.user_id,
-                email=user_data.email,
-                name=user_data.name,
-                is_anonymous=user_data.is_anonymous,
-                chat_count=user_data.chat_count or 0,
-                message_count=user_data.message_count or 0,
-                created_at=user_data.created_at.isoformat()
+                user_id=user_id,
+                email=user_data.get("email"),
+                name=user_data.get("name"),
+                is_anonymous=is_anonymous,
+                chat_count=chat_count,
+                message_count=message_count,
+                created_at=user_data.get("created_at", "")
             ))
-        
-        # Get overall company totals
-        total_users = len(users_with_stats)
-        
-        # Total chats - only count chats from non-anonymous users
-        total_chats = db.query(func.count(Chat.id)).join(
-            CompanyUser, Chat.user_id == CompanyUser.user_id
-        ).filter(
-            Chat.company_id == company_id,
-            Chat.is_deleted == False,
-            CompanyUser.is_anonymous == False
-        ).scalar() or 0
-        
-        # Total messages - only count messages from chats by non-anonymous users
-        total_messages = db.query(func.count(Message.id)).join(
-            Chat, Message.chat_id == Chat.chat_id
-        ).join(
-            CompanyUser, Chat.user_id == CompanyUser.user_id
-        ).filter(
-            Message.company_id == company_id,
-            CompanyUser.is_anonymous == False
-        ).scalar() or 0
-        
+
+        # Sort by created_at descending
+        users_with_stats.sort(key=lambda u: u.created_at, reverse=True)
+
         return CompanyUsersResponse(
             users=users_with_stats,
-            total_users=total_users,
+            total_users=len(users_with_stats),
             total_chats=total_chats,
             total_messages=total_messages,
             company_id=company_id
         )
-        
+
     except Exception as e:
         raise HTTPException(
             status_code=500,
             detail=f"Failed to fetch company users with stats: {str(e)}"
         )
-    finally:
-        db.close()
