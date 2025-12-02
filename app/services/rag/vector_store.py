@@ -1,20 +1,21 @@
 """
 Vector store operations for Pinecone.
-Each company gets their own dedicated Pinecone index.
+Uses a single shared index with namespace isolation for multi-tenancy.
+Each company gets their own namespace for complete data isolation.
 """
 
 from typing import List, Dict
 from langchain_pinecone import PineconeVectorStore
 from .pinecone_client import (
     get_pinecone_client,
-    get_company_index_name,
-    ensure_company_index_exists,
-    delete_company_index,
+    get_shared_index_name,
+    ensure_shared_index_exists,
+    delete_company_knowledge_base_vectors,
 )
 from .embeddings import create_embedding_function
 
 
-# Cache for vector stores
+# Cache for vector stores - now keyed by company_id but all use shared index
 _company_vector_stores: Dict[str, PineconeVectorStore] = {}
 
 
@@ -23,7 +24,7 @@ def create_company_vector_store(
 ) -> PineconeVectorStore:
     """
     Create a company-specific vector store with the provided document chunks.
-    Each company gets their own dedicated Pinecone index.
+    Uses shared index with namespace isolation per company.
 
     Args:
         company_id: Company ID
@@ -34,25 +35,29 @@ def create_company_vector_store(
     """
     global _company_vector_stores
 
-    # Ensure company-specific index exists
-    ensure_company_index_exists(company_id)
+    # Ensure shared index exists
+    ensure_shared_index_exists()
 
-    # Get company-specific index name
-    index_name = get_company_index_name(company_id)
+    # Get shared index name
+    index_name = get_shared_index_name()
 
     # Create embeddings
     embedding_function = create_embedding_function()
 
-    # Create vector store with company-specific index
+    # Create vector store with shared index and namespace for company isolation
     try:
         vector_store = PineconeVectorStore.from_texts(
             texts=doc_chunks,
             embedding=embedding_function,
             index_name=index_name,
-            # No namespace needed - each company has their own index
+            namespace=company_id,  # Use namespace for complete isolation
             text_key="text",
             metadatas=[
-                {"source": f"company_{company_id}", "chunk_id": i}
+                {
+                    "company_id": company_id,  # Also add to metadata for extra safety
+                    "source": f"company_{company_id}",
+                    "chunk_id": i,
+                }
                 for i in range(len(doc_chunks))
             ],
         )
@@ -69,13 +74,13 @@ def create_company_vector_store(
 def get_company_vector_store(company_id: str) -> PineconeVectorStore:
     """
     Get or create a company-specific vector store.
-    Each company gets their own dedicated Pinecone index.
+    Uses shared index with company_id metadata filtering.
 
     Args:
         company_id: Company ID
 
     Returns:
-        Company-specific vector store
+        Company-specific vector store with filtering
     """
     global _company_vector_stores
 
@@ -83,22 +88,24 @@ def get_company_vector_store(company_id: str) -> PineconeVectorStore:
     if company_id in _company_vector_stores:
         return _company_vector_stores[company_id]
 
-    # Ensure company-specific index exists
-    ensure_company_index_exists(company_id)
+    # Ensure shared index exists
+    ensure_shared_index_exists()
 
-    # Get company-specific index name
-    index_name = get_company_index_name(company_id)
+    # Get shared index name
+    index_name = get_shared_index_name()
 
     # Create embeddings
     embedding_function = create_embedding_function()
 
-    # Create vector store connection with company-specific index
+    # Create vector store connection with shared index
     pinecone_index = get_pinecone_client().Index(index_name)
 
+    # Create vector store with namespace for company isolation
+    # Note: We'll use company_id as namespace for better isolation
     vector_store = PineconeVectorStore(
         index=pinecone_index,
         embedding=embedding_function,
-        # No namespace needed - each company has their own index
+        namespace=company_id,  # Use company_id as namespace for isolation
     )
 
     # Cache the vector store
@@ -109,7 +116,7 @@ def get_company_vector_store(company_id: str) -> PineconeVectorStore:
 
 def clear_company_knowledge_base(company_id: str) -> bool:
     """
-    Clear all knowledge base content for a company by deleting all vectors in their index.
+    Clear all knowledge base content for a company by deleting their namespace.
 
     Args:
         company_id: Company ID
@@ -118,12 +125,16 @@ def clear_company_knowledge_base(company_id: str) -> bool:
         True if successful
     """
     try:
-        # Get company-specific index name
-        index_name = get_company_index_name(company_id)
-
-        # Delete all vectors in the company's index
+        # Get shared index
+        index_name = get_shared_index_name()
         index = get_pinecone_client().Index(index_name)
-        index.delete(delete_all=True)
+
+        # Delete all vectors in the company's namespace
+        index.delete(delete_all=True, namespace=company_id)
+
+        # Clear cache for this company
+        if company_id in _company_vector_stores:
+            del _company_vector_stores[company_id]
 
         return True
 
@@ -133,8 +144,8 @@ def clear_company_knowledge_base(company_id: str) -> bool:
 
 def delete_company_knowledge_base(company_id: str) -> bool:
     """
-    Completely delete a company's knowledge base index.
-    This removes the entire index, not just the vectors.
+    Delete a company's knowledge base by removing their namespace.
+    This removes all vectors for the company from the shared index.
 
     Args:
         company_id: Company ID
@@ -147,8 +158,8 @@ def delete_company_knowledge_base(company_id: str) -> bool:
         if company_id in _company_vector_stores:
             del _company_vector_stores[company_id]
 
-        # Delete the entire index
-        return delete_company_index(company_id)
+        # Delete all vectors for this company using their namespace
+        return delete_company_knowledge_base_vectors(company_id)
 
     except Exception:
         return False

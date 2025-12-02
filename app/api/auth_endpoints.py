@@ -12,11 +12,11 @@ from app.auth import (
     refresh_access_token, get_current_user_info
 )
 from app.auth.dependencies import get_current_company, UserContext
-from app.db.database import (
+from app.db.operations.company import (
     create_company, authenticate_company, get_company_by_id,
-    update_company_slug, publish_chatbot, update_chatbot_info, get_company_by_slug,
-    get_users_by_company_id
+    update_company_slug, publish_chatbot, update_chatbot_info, get_company_by_slug
 )
+from app.db.operations.user import get_users_by_company_id
 from app.core.config import get_chatbot_url
 
 router = APIRouter(prefix="/auth", tags=["authentication"])

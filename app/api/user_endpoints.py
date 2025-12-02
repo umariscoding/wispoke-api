@@ -7,10 +7,11 @@ from typing import Dict, Any, Optional
 from app.models.models import UserRegisterModel, UserLoginModel, GuestSessionModel
 from app.auth import create_user_tokens, create_guest_tokens
 from app.auth.dependencies import get_current_user, get_current_user_or_guest, UserContext
-from app.db.database import (
-    create_company, get_company_by_id, create_user, authenticate_user,
-    create_guest_session, get_user_by_id, get_guest_session, get_users_by_company_id
+from app.db.operations.company import create_company, get_company_by_id
+from app.db.operations.user import (
+    create_user, authenticate_user, get_user_by_id, get_users_by_company_id
 )
+from app.db.operations.guest import create_guest_session, get_guest_session
 
 router = APIRouter(prefix="/users", tags=["user_management"])
 

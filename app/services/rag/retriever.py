@@ -1,6 +1,6 @@
 """
 Custom Pinecone retriever implementation.
-Each company has their own dedicated Pinecone index.
+Uses shared index with namespace isolation per company.
 """
 
 from typing import List, Any
@@ -13,7 +13,7 @@ from pydantic import Field
 class DirectPineconeRetriever(BaseRetriever):
     """
     Custom retriever that uses direct Pinecone queries for reliable document retrieval.
-    Each company has their own dedicated index.
+    Uses namespace isolation for multi-tenancy.
     """
 
     pinecone_index: Any = Field(description="Pinecone index object")
@@ -31,7 +31,8 @@ class DirectPineconeRetriever(BaseRetriever):
             # Generate embedding for the query
             query_embedding = self.embedding_function.embed_query(query)
 
-            # Query Pinecone directly (no namespace needed - company has own index)
+            # Query Pinecone directly using the namespace set in the index
+            # Note: namespace is already set when the index object was created
             results = self.pinecone_index.query(
                 vector=query_embedding,
                 top_k=self.top_k,
@@ -66,10 +67,10 @@ def create_company_retriever(
 ) -> DirectPineconeRetriever:
     """
     Create a custom retriever for a company.
-    Each company has their own dedicated Pinecone index.
+    Uses shared index with namespace isolation.
 
     Args:
-        pinecone_index: Pinecone index instance for the company
+        pinecone_index: Pinecone index instance (with namespace set)
         embedding_function: Embedding function
         top_k: Number of documents to retrieve
 

@@ -7,21 +7,20 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Dict, Any, Optional
 from app.models.models import PublicChatMessage
-from app.db.database import (
+from app.db.operations.company import (
     get_published_company_info,
-    create_guest_session,
-    create_chat,
-    get_chat_by_id,
-    save_message,
-    get_company_by_slug,
+    get_company_by_slug
 )
-from app.services.langchain_service import (
+from app.db.operations.guest import create_guest_session
+from app.db.operations.chat import create_chat, get_chat_by_id
+from app.db.operations.message import save_message
+from app.services.rag import (
     stream_company_response,
     get_company_vector_store,
-    setup_company_knowledge_base
+    
 )
-from app.services.fetchdata_service import get_default_no_knowledge_content
-from app.services.document_service import split_text_for_txt
+# from app.services.fetchdata_service import get_default_no_knowledge_content
+# from app.services.document_processing import split_text_for_txt
 import uuid
 import json
 import asyncio

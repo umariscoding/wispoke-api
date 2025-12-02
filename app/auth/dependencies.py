@@ -6,7 +6,9 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from typing import Optional, Dict, Any
 from app.auth.jwt import get_current_user_info, is_company_token, is_user_token, is_guest_token
-from app.db.database import get_company_by_id, get_user_by_id, get_guest_session
+from app.db.operations.company import get_company_by_id
+from app.db.operations.user import get_user_by_id
+from app.db.operations.guest import get_guest_session
 
 # Security scheme
 security = HTTPBearer()

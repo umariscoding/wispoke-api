@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 import time
 
 from app.auth.dependencies import get_current_company, UserContext
-from app.db.database import db
+from app.db.operations.client import db
 
 router = APIRouter(prefix="/api/company/analytics", tags=["analytics"])
 

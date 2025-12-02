@@ -183,4 +183,4 @@ class ChatbotInfoModel(BaseModel):
 class PublicChatMessage(BaseModel):
     message: str
     chat_id: Optional[str] = None
-    model: str = "OpenAI"
+    model: str = "Llama-instant"  # Default to fast Llama model

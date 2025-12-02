@@ -20,9 +20,11 @@ from .api_keys import (
 )
 from .pinecone_client import (
     get_pinecone_client,
-    get_company_index_name,
-    ensure_company_index_exists,
-    delete_company_index,
+    get_company_index_name,  # Legacy - now returns shared index
+    get_shared_index_name,
+    ensure_company_index_exists,  # Legacy - now ensures shared index
+    ensure_shared_index_exists,
+    delete_company_knowledge_base_vectors,
 )
 from .embeddings import create_embedding_function
 from .vector_store import (
@@ -33,7 +35,7 @@ from .vector_store import (
     delete_company_knowledge_base,
 )
 from .retriever import create_company_retriever
-from .llm import create_llm
+from .llm import create_llm, get_available_models, GROQ_MODEL_MAP
 from .rag_chain import (
     get_company_rag_chain,
     get_rag_chain_cache,
@@ -74,9 +76,11 @@ __all__ = [
     "get_pinecone_api_key",
     # Pinecone
     "get_pinecone_client",
-    "get_company_index_name",
-    "ensure_company_index_exists",
-    "delete_company_index",
+    "get_company_index_name",  # Legacy
+    "get_shared_index_name",
+    "ensure_company_index_exists",  # Legacy
+    "ensure_shared_index_exists",
+    "delete_company_knowledge_base_vectors",
     # Embeddings
     "create_embedding_function",
     # Vector Store
@@ -89,6 +93,8 @@ __all__ = [
     "create_company_retriever",
     # LLM
     "create_llm",
+    "get_available_models",
+    "GROQ_MODEL_MAP",
     # RAG Chain
     "get_company_rag_chain",
     "get_rag_chain_cache",

@@ -7,31 +7,38 @@ import uuid
 import json
 
 from app.auth.dependencies import get_current_user, get_current_company, UserContext
-from app.services.langchain_service import (
-    get_company_rag_chain, 
+from app.services.rag import (
+    get_company_rag_chain,
     stream_company_response,
-    setup_company_knowledge_base,
     get_company_vector_store,
     process_company_document,
     clear_company_knowledge_base,
-    clear_company_cache
+    clear_company_cache,
+    get_pinecone_client,
+    get_company_index_name
 )
-from app.services.fetchdata_service import setup_default_knowledge_base
-from app.services.document_service import split_text_for_txt
-from app.db.database import (
+from app.services.document_processing import (
+    split_text_for_txt,
+    validate_file_type,
+    extract_text_from_file,
+    upload_file_to_supabase
+)
+from app.db.operations.chat import (
     create_chat,
     get_chat_by_id,
-    save_message,
-    fetch_messages,
     fetch_company_chats,
     update_chat_title,
-    delete_chat,
-    get_company_by_id,
-    get_or_create_knowledge_base,
+    delete_chat
+)
+from app.db.operations.message import save_message, fetch_messages
+from app.db.operations.company import get_company_by_id
+from app.db.operations.knowledge_base import get_or_create_knowledge_base
+from app.db.operations.document import (
     save_document,
     get_company_documents,
     delete_document
 )
+from app.db.operations.client import generate_id, db
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -44,7 +51,7 @@ class ChatMessage(BaseModel):
     message: str
     chat_id: Optional[str] = None
     chat_title: Optional[str] = "New Chat"
-    model: str = "OpenAI"
+    model: str = "Llama-instant"  # Options: Llama-instant, Llama-large, Mixtral, Gemma, Qwen, OpenAI
 
 class ChatTitleUpdate(BaseModel):
     title: str
@@ -380,12 +387,6 @@ async def upload_document(
     Only accessible by company users.
     """
     try:
-        from app.services.document_service import (
-            validate_file_type,
-            extract_text_from_file,
-            upload_file_to_supabase
-        )
-
         # Validate file type
         if not validate_file_type(file.filename or "", file.content_type or ""):
             raise HTTPException(
@@ -405,7 +406,6 @@ async def upload_document(
         kb = await get_or_create_knowledge_base(user.company_id)
 
         # Generate document ID first (needed for file path)
-        from app.db.database import generate_id
         doc_id = generate_id()
 
         # Upload file to Supabase storage
@@ -445,7 +445,6 @@ async def upload_document(
         )
 
         # Update the document with the generated doc_id
-        from app.db.database import db
         db.table("documents").update({"doc_id": doc_id}).eq("doc_id", document["doc_id"]).execute()
         document["doc_id"] = doc_id
 
@@ -648,12 +647,6 @@ async def ensure_company_knowledge_base(company_id: str):
     """
     try:
         # Check if company's Pinecone index exists and has vectors
-        from app.services.rag import (
-            get_pinecone_client,
-            get_company_index_name,
-            clear_company_cache,
-        )
-
         index_name = get_company_index_name(company_id)
         pc = get_pinecone_client()
 

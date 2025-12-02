@@ -1,5 +1,8 @@
 """
 Pinecone client initialization and management.
+
+Uses a single shared index with namespace isolation for multi-tenancy.
+Each company gets their own namespace for complete data isolation.
 """
 
 import time
@@ -9,6 +12,9 @@ from .api_keys import check_pinecone_key, get_pinecone_api_key
 
 # Initialize Pinecone (lazy initialization)
 _pinecone_client = None
+
+# Shared index name for all companies
+SHARED_INDEX_NAME = "chatelio-shared"
 
 
 def get_pinecone_client() -> Pinecone:
@@ -20,36 +26,26 @@ def get_pinecone_client() -> Pinecone:
     return _pinecone_client
 
 
-def get_company_index_name(company_id: str) -> str:
+def get_shared_index_name() -> str:
     """
-    Generate a company-specific index name.
-
-    Args:
-        company_id: Company ID
+    Get the shared index name used by all companies.
 
     Returns:
-        Company-specific index name
+        Shared index name
     """
-    # Sanitize company_id to ensure valid index name
-    # Pinecone index names must be lowercase alphanumeric with hyphens
-    sanitized_id = company_id.lower().replace("_", "-")
-    return f"chatelio-{sanitized_id}"
+    return SHARED_INDEX_NAME
 
 
-def ensure_company_index_exists(company_id: str):
+def ensure_shared_index_exists():
     """
-    Ensure a company-specific index exists with optimal configuration.
-
-    Args:
-        company_id: Company ID
+    Ensure the shared index exists with optimal configuration.
+    All companies use this single index with metadata filtering.
 
     Raises:
         TimeoutError: If index creation times out
         Exception: If index creation fails
     """
     try:
-        index_name = get_company_index_name(company_id)
-
         # Get list of existing indexes
         existing_indexes = [
             index_info["name"]
@@ -57,9 +53,9 @@ def ensure_company_index_exists(company_id: str):
         ]
 
         # Create index if it doesn't exist
-        if index_name not in existing_indexes:
+        if SHARED_INDEX_NAME not in existing_indexes:
             get_pinecone_client().create_index(
-                name=index_name,
+                name=SHARED_INDEX_NAME,
                 dimension=1024,  # Cohere embed-english-v3.0 dimension
                 metric="cosine",  # Best for text similarity
                 spec=ServerlessSpec(cloud="aws", region="us-east-1"),
@@ -68,7 +64,7 @@ def ensure_company_index_exists(company_id: str):
             # Wait for index to be ready with timeout
             max_wait = 300  # 5 minutes timeout
             waited = 0
-            while not get_pinecone_client().describe_index(index_name).status["ready"]:
+            while not get_pinecone_client().describe_index(SHARED_INDEX_NAME).status["ready"]:
                 if waited >= max_wait:
                     raise TimeoutError(
                         f"Index creation timed out after {max_wait} seconds"
@@ -80,9 +76,37 @@ def ensure_company_index_exists(company_id: str):
         raise e
 
 
-def delete_company_index(company_id: str) -> bool:
+# Legacy function for backward compatibility
+def get_company_index_name(company_id: str) -> str:
     """
-    Delete a company-specific index.
+    Legacy function - now returns shared index name.
+    Kept for backward compatibility.
+
+    Args:
+        company_id: Company ID (ignored)
+
+    Returns:
+        Shared index name
+    """
+    return SHARED_INDEX_NAME
+
+
+# Legacy function for backward compatibility
+def ensure_company_index_exists(company_id: str):
+    """
+    Legacy function - now ensures shared index exists.
+    Kept for backward compatibility.
+
+    Args:
+        company_id: Company ID (ignored)
+    """
+    ensure_shared_index_exists()
+
+
+def delete_company_knowledge_base_vectors(company_id: str) -> bool:
+    """
+    Delete all vectors for a specific company from the shared index.
+    Uses namespace isolation for complete data separation.
 
     Args:
         company_id: Company ID
@@ -91,8 +115,9 @@ def delete_company_index(company_id: str) -> bool:
         True if deletion was successful
     """
     try:
-        index_name = get_company_index_name(company_id)
-        get_pinecone_client().delete_index(index_name)
+        index = get_pinecone_client().Index(SHARED_INDEX_NAME)
+        # Delete all vectors in this company's namespace
+        index.delete(delete_all=True, namespace=company_id)
         return True
     except Exception:
         return False
