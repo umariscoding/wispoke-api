@@ -10,9 +10,10 @@ from app.models.models import PublicChatMessage
 from app.db.database import (
     get_published_company_info,
     create_guest_session,
-    save_chat,
+    create_chat,
+    get_chat_by_id,
     save_message,
-    get_company_by_slug
+    get_company_by_slug,
 )
 from app.services.langchain_service import (
     stream_company_response,
@@ -124,21 +125,29 @@ async def send_subdomain_message(
         
         # Generate chat_id if not provided
         chat_id = message_data.chat_id or str(uuid.uuid4())
-        
-        # Create guest session for this company
-        guest_session = await create_guest_session(
-            company_id=company["company_id"],
-            ip_address=request.client.host if request.client else None,
-            user_agent=request.headers.get("user-agent")
-        )
-        
-        # Save chat and human message
-        await save_chat(
-            company_id=company["company_id"],
-            chat_id=chat_id,
-            title="Public Chat",
-            session_id=guest_session["session_id"]
-        )
+
+        # Check if chat already exists
+        existing_chat = await get_chat_by_id(chat_id)
+
+        # Only create guest session and chat if chat doesn't exist
+        if not existing_chat:
+            # Create guest session for this company
+            guest_session = await create_guest_session(
+                company_id=company["company_id"],
+                ip_address=request.client.host if request.client else None,
+                user_agent=request.headers.get("user-agent")
+            )
+
+            # Create new chat
+            await create_chat(
+                company_id=company["company_id"],
+                chat_id=chat_id,
+                title="Public Chat",
+                session_id=guest_session["session_id"]
+            )
+        else:
+            # Chat exists, use existing session_id for response headers
+            guest_session = {"session_id": existing_chat.get("session_id", "")}
         
         await save_message(
             company_id=company["company_id"],
@@ -321,24 +330,32 @@ async def send_public_message(
             )
         
         company_id = company["company_id"]
-        
+
         # Generate chat_id if not provided
         chat_id = message_data.chat_id or str(uuid.uuid4())
-        
-        # Create guest session for this company
-        guest_session = await create_guest_session(
-            company_id=company_id,
-            ip_address=request.client.host if request.client else None,
-            user_agent=request.headers.get("user-agent")
-        )
-        
-        # Save chat and human message
-        await save_chat(
-            company_id=company_id,
-            chat_id=chat_id,
-            title="Public Chat",
-            session_id=guest_session["session_id"]
-        )
+
+        # Check if chat already exists
+        existing_chat = await get_chat_by_id(chat_id)
+
+        # Only create guest session and chat if chat doesn't exist
+        if not existing_chat:
+            # Create guest session for this company
+            guest_session = await create_guest_session(
+                company_id=company_id,
+                ip_address=request.client.host if request.client else None,
+                user_agent=request.headers.get("user-agent")
+            )
+
+            # Create new chat
+            await create_chat(
+                company_id=company_id,
+                chat_id=chat_id,
+                title="Public Chat",
+                session_id=guest_session["session_id"]
+            )
+        else:
+            # Chat exists, use existing session_id for response headers
+            guest_session = {"session_id": existing_chat.get("session_id", "")}
         
         await save_message(
             company_id=company_id,
@@ -400,7 +417,7 @@ async def send_public_message(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Internal server error: {str(e)}"
+            detail=f"Failed to process chat message: {str(e)}"
         )
 
 @router.get("/company/{company_slug}/info")

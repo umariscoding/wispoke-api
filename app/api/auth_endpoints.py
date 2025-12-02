@@ -40,11 +40,14 @@ async def register_company(company_data: CompanyRegisterModel) -> Dict[str, Any]
         HTTPException: If company already exists or registration fails
     """
     try:
+        # Hash password before storing
+        hashed_password = get_password_hash(company_data.password)
+
         # Create company account
         company = await create_company(
             name=company_data.name,
             email=company_data.email,
-            password=company_data.password
+            password=hashed_password
         )
         
         # Generate authentication tokens

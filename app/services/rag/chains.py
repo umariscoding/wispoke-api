@@ -4,16 +4,16 @@ Provides separate chains for question contextualization and answer generation.
 """
 
 from typing import List, Dict, Any
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.runnables import RunnablePassthrough, RunnableLambda
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnableLambda
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from langsmith import traceable
-from app.services.prompts import (
+from .prompts import (
     contextualize_system_prompt,
     contextualize_user_prompt,
     qa_system_prompt,
-    qa_user_prompt
+    qa_user_prompt,
 )
 
 
@@ -66,7 +66,10 @@ def format_chat_history_for_qa(messages: List[BaseMessage]) -> str:
             formatted_messages.append(f"Assistant: {msg.content}")
 
     if len(messages) > 5:
-        return f"[Earlier messages omitted - showing last 5 messages]\n\n" + "\n".join(formatted_messages)
+        return (
+            f"[Earlier messages omitted - showing last 5 messages]\n\n"
+            + "\n".join(formatted_messages)
+        )
     else:
         return "\n".join(formatted_messages)
 
@@ -84,16 +87,17 @@ def create_contextualization_chain(llm):
         Runnable chain for question contextualization
     """
     # Create prompt template
-    prompt = ChatPromptTemplate.from_messages([
-        ("system", contextualize_system_prompt),
-        ("user", contextualize_user_prompt)
-    ])
+    prompt = ChatPromptTemplate.from_messages(
+        [("system", contextualize_system_prompt), ("user", contextualize_user_prompt)]
+    )
 
     # Create chain: prompt -> llm -> output parser
     chain = (
         {
-            "chat_history": lambda x: format_chat_history_for_contextualization(x["chat_history"]),
-            "input": lambda x: x["input"]
+            "chat_history": lambda x: format_chat_history_for_contextualization(
+                x["chat_history"]
+            ),
+            "input": lambda x: x["input"],
         }
         | prompt
         | llm
@@ -116,6 +120,7 @@ def create_retrieval_chain(retriever, contextualization_chain):
     Returns:
         Runnable chain for document retrieval
     """
+
     def contextualize_if_needed(inputs: Dict[str, Any]) -> str:
         """
         Contextualize question only if there's chat history.
@@ -128,16 +133,12 @@ def create_retrieval_chain(retriever, contextualization_chain):
             return inputs["input"]
 
         # Otherwise, contextualize the question
-        return contextualization_chain.invoke({
-            "chat_history": chat_history,
-            "input": inputs["input"]
-        })
+        return contextualization_chain.invoke(
+            {"chat_history": chat_history, "input": inputs["input"]}
+        )
 
     # Create retrieval chain
-    chain = (
-        RunnableLambda(contextualize_if_needed)
-        | retriever
-    )
+    chain = RunnableLambda(contextualize_if_needed) | retriever
 
     return chain
 
@@ -162,19 +163,17 @@ def create_qa_chain(llm, retriever, contextualization_chain):
     retrieval_chain = create_retrieval_chain(retriever, contextualization_chain)
 
     # Create QA prompt template with last 5 messages
-    qa_prompt = ChatPromptTemplate.from_messages([
-        ("system", qa_system_prompt),
-        ("user", qa_user_prompt)
-    ])
+    qa_prompt = ChatPromptTemplate.from_messages(
+        [("system", qa_system_prompt), ("user", qa_user_prompt)]
+    )
 
     def format_documents(docs):
         """Format retrieved documents into a single context string."""
         if not docs:
             return "No relevant documents found in the knowledge base."
-        return "\n\n".join([
-            f"Document {i+1}:\n{doc.page_content}"
-            for i, doc in enumerate(docs)
-        ])
+        return "\n\n".join(
+            [f"Document {i+1}:\n{doc.page_content}" for i, doc in enumerate(docs)]
+        )
 
     def prepare_qa_inputs(inputs: Dict[str, Any]) -> Dict[str, Any]:
         """
@@ -190,19 +189,10 @@ def create_qa_chain(llm, retriever, contextualization_chain):
         # Format chat history (last 5 messages only)
         chat_history = format_chat_history_for_qa(inputs.get("chat_history", []))
 
-        return {
-            "context": context,
-            "chat_history": chat_history,
-            "input": inputs["input"]
-        }
+        return {"context": context, "chat_history": chat_history, "input": inputs["input"]}
 
     # Create complete QA chain
-    chain = (
-        RunnableLambda(prepare_qa_inputs)
-        | qa_prompt
-        | llm
-        | StrOutputParser()
-    )
+    chain = RunnableLambda(prepare_qa_inputs) | qa_prompt | llm | StrOutputParser()
 
     return chain
 

@@ -19,9 +19,10 @@ from app.services.langchain_service import (
 from app.services.fetchdata_service import setup_default_knowledge_base
 from app.services.document_service import split_text_for_txt
 from app.db.database import (
-    save_chat, 
-    save_message, 
-    fetch_messages, 
+    create_chat,
+    get_chat_by_id,
+    save_message,
+    fetch_messages,
     fetch_company_chats,
     update_chat_title,
     delete_chat,
@@ -29,7 +30,6 @@ from app.db.database import (
     get_or_create_knowledge_base,
     save_document,
     get_company_documents,
-    get_document_content,
     delete_document
 )
 
@@ -92,19 +92,24 @@ async def send_message(
         
         # Generate chat_id if not provided
         chat_id = message_data.chat_id or str(uuid.uuid4())
-        
-        # Determine user_id and session_id based on user type
-        user_id = user.user_id if user.user_type == "user" else None
-        session_id = user.user_id if user.user_type == "guest" else None  # For guests, user_id is session_id
-        
-        # Save chat and human message
-        await save_chat(
-            company_id=user.company_id,
-            chat_id=chat_id,
-            title=message_data.chat_title or "New Chat",
-            user_id=user_id,
-            session_id=session_id
-        )
+
+        # Check if chat already exists
+        existing_chat = await get_chat_by_id(chat_id)
+
+        # Only create chat if it doesn't exist
+        if not existing_chat:
+            # Determine user_id and session_id based on user type
+            user_id = user.user_id if user.user_type == "user" else None
+            session_id = user.user_id if user.user_type == "guest" else None  # For guests, user_id is session_id
+
+            # Create new chat
+            await create_chat(
+                company_id=user.company_id,
+                chat_id=chat_id,
+                title=message_data.chat_title or "New Chat",
+                user_id=user_id,
+                session_id=session_id
+            )
         
         await save_message(
             company_id=user.company_id,
@@ -639,31 +644,40 @@ async def clear_rag_cache(
 async def ensure_company_knowledge_base(company_id: str):
     """
     Ensure knowledge base is set up for a company.
-    If not exists, create it with dummy data.
+    Each company has their own dedicated Pinecone index.
     """
     try:
-        # Check Pinecone index stats directly
-        from app.services.langchain_service import pc, BASE_INDEX_NAME, get_company_namespace
-        
-        namespace = get_company_namespace(company_id)
-        index = pc.Index(BASE_INDEX_NAME)
+        # Check if company's Pinecone index exists and has vectors
+        from app.services.rag import (
+            get_pinecone_client,
+            get_company_index_name,
+            clear_company_cache,
+        )
+
+        index_name = get_company_index_name(company_id)
+        pc = get_pinecone_client()
+
+        # Check if index exists
+        existing_indexes = [idx["name"] for idx in pc.list_indexes()]
+
+        if index_name not in existing_indexes:
+            # No index exists - company should upload documents
+            return
+
+        # Check if index has vectors
+        index = pc.Index(index_name)
         stats = index.describe_index_stats()
-        
-        # Check if company namespace exists and has vectors
-        has_vectors = False
-        if stats.namespaces and namespace in stats.namespaces:
-            vector_count = stats.namespaces[namespace].vector_count
-            has_vectors = vector_count > 0
-        
+
+        has_vectors = stats.total_vector_count > 0
+
         if has_vectors:
             # Clear any stale cache to ensure fresh connections
-            from app.services.langchain_service import clear_company_cache
             clear_company_cache(company_id)
             return
-        
+
         # No vectors found - company should upload documents
         return
-            
-    except Exception as e:
+
+    except Exception:
         # If any error occurs, preserve existing content
         return 

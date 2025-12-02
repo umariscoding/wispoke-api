@@ -176,16 +176,12 @@ qa_user_prompt = """**Recent Conversation (Last 5 Messages):**
 # PROMPT TEMPLATES
 # =============================================================================
 
+
 def get_contextualize_prompt_template():
     """Get the prompt template for contextualizing questions."""
-    return {
-        "system": contextualize_system_prompt,
-        "user": contextualize_user_prompt
-    }
+    return {"system": contextualize_system_prompt, "user": contextualize_user_prompt}
+
 
 def get_qa_prompt_template():
     """Get the prompt template for answering questions."""
-    return {
-        "system": qa_system_prompt,
-        "user": qa_user_prompt
-    }
+    return {"system": qa_system_prompt, "user": qa_user_prompt}
