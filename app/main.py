@@ -1,6 +1,9 @@
 import logging
+import os
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from app.api.endpoints import router as api_router
 from app.api.auth_endpoints import router as auth_router
 from app.api.user_endpoints import router as user_router
@@ -9,6 +12,10 @@ from app.api.public_endpoints import router as public_router
 from app.api.analytics_endpoints import router as analytics_router
 
 app = FastAPI()
+
+# Get the directory where this file is located
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+STATIC_DIR = os.path.join(BASE_DIR, "static")
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -102,6 +109,24 @@ app.include_router(chat_router)
 app.include_router(public_router)
 app.include_router(analytics_router)
 app.include_router(api_router)
+
+# Serve embed widget script
+@app.get("/embed.js")
+async def serve_embed_script():
+    """Serve the embed widget JavaScript file."""
+    embed_path = os.path.join(STATIC_DIR, "embed.js")
+    return FileResponse(
+        embed_path,
+        media_type="application/javascript",
+        headers={
+            "Cache-Control": "public, max-age=3600",
+            "Access-Control-Allow-Origin": "*"
+        }
+    )
+
+# Mount static files directory
+if os.path.exists(STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # Add root health check
 @app.get("/")
