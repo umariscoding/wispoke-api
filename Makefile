@@ -17,7 +17,7 @@ setup:
 venv:
 	@if [ -x "$(PY)" ]; then \
 		"$(PY)" -m venv .venv && \
-		. .venv/bin/activate && pip install --upgrade pip setuptools wheel && \
+		.venv/bin/python -m pip install --upgrade pip setuptools wheel && \
 		echo "Created .venv with $(PY)"; \
 	else \
 		echo "python@3.11 not found — run 'make setup' first"; exit 1; \
@@ -25,8 +25,8 @@ venv:
 
 # Install project requirements into the venv
 install: venv
-	@bash -lc '. .venv/bin/activate && pip install -r requirements.txt'
+	@bash -lc '.venv/bin/python -m pip install -r requirements.txt'
 
 # Run the FastAPI app using the venv
 run:
-	@bash -lc '. .venv/bin/activate && uvicorn app.main:app --reload --port 8081'
+	@bash -lc '.venv/bin/python -m uvicorn app.main:app --reload --port 8081'
