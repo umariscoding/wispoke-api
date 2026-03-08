@@ -1,16 +1,24 @@
 from fastapi import APIRouter, HTTPException
-from app.services.langchain_service import create_embeddings_and_store_text, get_pinecone_vectorstore, get_rag_chain, stream_response, clear_cache, force_refresh_all_rag_chains
-from app.db.database import (
-    update_chat_title_old as update_chat_title, 
-    fetch_all_chats, 
-    fetch_messages_old as fetch_messages, 
-    delete_chat_old as delete_chat, 
-    delete_all_chats_old as delete_all_chats, 
-    save_chat_old as save_chat, 
+from app.services.rag import (
+    get_company_vector_store as get_pinecone_vectorstore,
+    get_company_rag_chain as get_rag_chain,
+    stream_company_response as stream_response,
+    clear_cache,
+    force_refresh_all_rag_chains
+)
+from app.db.operations.chat import (
+    update_chat_title,
+    fetch_all_chats,
+    delete_chat,
+    delete_all_chats,
+    save_chat
+)
+from app.db.operations.message import (
+    fetch_messages_old as fetch_messages,
     save_message_old as save_message
 )
-from app.services.document_service import split_text_for_txt 
-from app.services.fetchdata_service import get_default_no_knowledge_content
+# from app.services.document_processing import split_text_for_txt
+# from app.services.fetchdata_service import get_default_no_knowledge_content
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse
 from io import StringIO

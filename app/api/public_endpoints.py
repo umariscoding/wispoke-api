@@ -7,20 +7,20 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Dict, Any, Optional
 from app.models.models import PublicChatMessage
-from app.db.database import (
+from app.db.operations.company import (
     get_published_company_info,
-    create_guest_session,
-    save_chat,
-    save_message,
     get_company_by_slug
 )
-from app.services.langchain_service import (
+from app.db.operations.guest import create_guest_session
+from app.db.operations.chat import create_chat, get_chat_by_id
+from app.db.operations.message import save_message
+from app.services.rag import (
     stream_company_response,
     get_company_vector_store,
-    setup_company_knowledge_base
+    
 )
-from app.services.fetchdata_service import get_default_no_knowledge_content
-from app.services.document_service import split_text_for_txt
+# from app.services.fetchdata_service import get_default_no_knowledge_content
+# from app.services.document_processing import split_text_for_txt
 import uuid
 import json
 import asyncio
@@ -124,21 +124,29 @@ async def send_subdomain_message(
         
         # Generate chat_id if not provided
         chat_id = message_data.chat_id or str(uuid.uuid4())
-        
-        # Create guest session for this company
-        guest_session = await create_guest_session(
-            company_id=company["company_id"],
-            ip_address=request.client.host if request.client else None,
-            user_agent=request.headers.get("user-agent")
-        )
-        
-        # Save chat and human message
-        await save_chat(
-            company_id=company["company_id"],
-            chat_id=chat_id,
-            title="Public Chat",
-            session_id=guest_session["session_id"]
-        )
+
+        # Check if chat already exists
+        existing_chat = await get_chat_by_id(chat_id)
+
+        # Only create guest session and chat if chat doesn't exist
+        if not existing_chat:
+            # Create guest session for this company
+            guest_session = await create_guest_session(
+                company_id=company["company_id"],
+                ip_address=request.client.host if request.client else None,
+                user_agent=request.headers.get("user-agent")
+            )
+
+            # Create new chat
+            await create_chat(
+                company_id=company["company_id"],
+                chat_id=chat_id,
+                title="Public Chat",
+                session_id=guest_session["session_id"]
+            )
+        else:
+            # Chat exists, use existing session_id for response headers
+            guest_session = {"session_id": existing_chat.get("session_id", "")}
         
         await save_message(
             company_id=company["company_id"],
@@ -321,24 +329,32 @@ async def send_public_message(
             )
         
         company_id = company["company_id"]
-        
+
         # Generate chat_id if not provided
         chat_id = message_data.chat_id or str(uuid.uuid4())
-        
-        # Create guest session for this company
-        guest_session = await create_guest_session(
-            company_id=company_id,
-            ip_address=request.client.host if request.client else None,
-            user_agent=request.headers.get("user-agent")
-        )
-        
-        # Save chat and human message
-        await save_chat(
-            company_id=company_id,
-            chat_id=chat_id,
-            title="Public Chat",
-            session_id=guest_session["session_id"]
-        )
+
+        # Check if chat already exists
+        existing_chat = await get_chat_by_id(chat_id)
+
+        # Only create guest session and chat if chat doesn't exist
+        if not existing_chat:
+            # Create guest session for this company
+            guest_session = await create_guest_session(
+                company_id=company_id,
+                ip_address=request.client.host if request.client else None,
+                user_agent=request.headers.get("user-agent")
+            )
+
+            # Create new chat
+            await create_chat(
+                company_id=company_id,
+                chat_id=chat_id,
+                title="Public Chat",
+                session_id=guest_session["session_id"]
+            )
+        else:
+            # Chat exists, use existing session_id for response headers
+            guest_session = {"session_id": existing_chat.get("session_id", "")}
         
         await save_message(
             company_id=company_id,
@@ -400,7 +416,7 @@ async def send_public_message(
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Internal server error: {str(e)}"
+            detail=f"Failed to process chat message: {str(e)}"
         )
 
 @router.get("/company/{company_slug}/info")

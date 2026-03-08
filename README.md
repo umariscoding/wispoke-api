@@ -44,6 +44,8 @@ A FastAPI-based multi-tenant chatbot platform that provides Chatbot-as-a-Service
    recommended because system packages like `libpq` may be required):
 
    ```bash
+   conda create -n chatelio python=3.11
+   conda activate  chatelio
    pip install -r requirements.txt
    ```
 

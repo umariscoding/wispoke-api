@@ -7,31 +7,38 @@ import uuid
 import json
 
 from app.auth.dependencies import get_current_user, get_current_company, UserContext
-from app.services.langchain_service import (
-    get_company_rag_chain, 
+from app.services.rag import (
+    get_company_rag_chain,
     stream_company_response,
-    setup_company_knowledge_base,
     get_company_vector_store,
     process_company_document,
     clear_company_knowledge_base,
-    clear_company_cache
+    clear_company_cache,
+    get_pinecone_client,
+    get_company_index_name
 )
-from app.services.fetchdata_service import setup_default_knowledge_base
-from app.services.document_service import split_text_for_txt
-from app.db.database import (
-    save_chat, 
-    save_message, 
-    fetch_messages, 
+from app.services.document_processing import (
+    split_text_for_txt,
+    validate_file_type,
+    extract_text_from_file,
+    upload_file_to_supabase
+)
+from app.db.operations.chat import (
+    create_chat,
+    get_chat_by_id,
     fetch_company_chats,
     update_chat_title,
-    delete_chat,
-    get_company_by_id,
-    get_or_create_knowledge_base,
+    delete_chat
+)
+from app.db.operations.message import save_message, fetch_messages
+from app.db.operations.company import get_company_by_id
+from app.db.operations.knowledge_base import get_or_create_knowledge_base
+from app.db.operations.document import (
     save_document,
     get_company_documents,
-    get_document_content,
     delete_document
 )
+from app.db.operations.client import generate_id, db
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -44,7 +51,7 @@ class ChatMessage(BaseModel):
     message: str
     chat_id: Optional[str] = None
     chat_title: Optional[str] = "New Chat"
-    model: str = "OpenAI"
+    model: str = "Llama-instant"  # Options: Llama-instant, Llama-large, OpenAI, Claude, Cohere
 
 class ChatTitleUpdate(BaseModel):
     title: str
@@ -92,19 +99,24 @@ async def send_message(
         
         # Generate chat_id if not provided
         chat_id = message_data.chat_id or str(uuid.uuid4())
-        
-        # Determine user_id and session_id based on user type
-        user_id = user.user_id if user.user_type == "user" else None
-        session_id = user.user_id if user.user_type == "guest" else None  # For guests, user_id is session_id
-        
-        # Save chat and human message
-        await save_chat(
-            company_id=user.company_id,
-            chat_id=chat_id,
-            title=message_data.chat_title or "New Chat",
-            user_id=user_id,
-            session_id=session_id
-        )
+
+        # Check if chat already exists
+        existing_chat = await get_chat_by_id(chat_id)
+
+        # Only create chat if it doesn't exist
+        if not existing_chat:
+            # Determine user_id and session_id based on user type
+            user_id = user.user_id if user.user_type == "user" else None
+            session_id = user.user_id if user.user_type == "guest" else None  # For guests, user_id is session_id
+
+            # Create new chat
+            await create_chat(
+                company_id=user.company_id,
+                chat_id=chat_id,
+                title=message_data.chat_title or "New Chat",
+                user_id=user_id,
+                session_id=session_id
+            )
         
         await save_message(
             company_id=user.company_id,
@@ -201,20 +213,20 @@ async def get_chat_history(
     """
     try:
         # Fetch messages for this company and chat
-        messages = await fetch_messages(user.company_id, chat_id)
-        
+        messages = fetch_messages(user.company_id, chat_id)
+
         # Additional access control: verify the chat belongs to this user/session
         chats = await fetch_company_chats(
             company_id=user.company_id,
             user_id=user.user_id if user.user_type == "user" else None,
             session_id=user.user_id if user.user_type == "guest" else None
         )
-        
+
         # Check if this chat belongs to the user
         chat_exists = any(chat["chat_id"] == chat_id for chat in chats)
         if not chat_exists:
             raise HTTPException(status_code=404, detail="Chat not found or access denied")
-        
+
         return ChatHistory(messages=messages)
         
     except HTTPException:
@@ -371,64 +383,93 @@ async def upload_document(
     user: UserContext = Depends(get_current_company)
 ):
     """
-    Upload a text document to the company's knowledge base.
+    Upload a document (PDF, TXT, or DOCX) to the company's knowledge base.
     Only accessible by company users.
     """
     try:
         # Validate file type
-        if not file.content_type or not file.content_type.startswith('text/'):
+        if not validate_file_type(file.filename or "", file.content_type or ""):
             raise HTTPException(
-                status_code=400, 
-                detail="Only text files are supported"
+                status_code=400,
+                detail="Unsupported file type. Only PDF, TXT, and DOCX files are supported."
             )
-        
+
         # Validate file size (max 10MB)
-        content = await file.read()
-        if len(content) > 10 * 1024 * 1024:  # 10MB limit
+        file_content = await file.read()
+        if len(file_content) > 10 * 1024 * 1024:  # 10MB limit
             raise HTTPException(
                 status_code=400,
                 detail="File size too large. Maximum 10MB allowed."
             )
-        
-        # Decode content
-        try:
-            text_content = content.decode('utf-8')
-        except UnicodeDecodeError:
-            raise HTTPException(
-                status_code=400,
-                detail="File must be valid UTF-8 text"
-            )
-        
+
         # Get or create knowledge base
         kb = await get_or_create_knowledge_base(user.company_id)
-        
-        # Save document to database
+
+        # Generate document ID first (needed for file path)
+        doc_id = generate_id()
+
+        # Upload file to Supabase storage
+        try:
+            file_url = await upload_file_to_supabase(
+                file_content=file_content,
+                filename=file.filename or "document.txt",
+                company_id=user.company_id,
+                doc_id=doc_id
+            )
+        except Exception as upload_error:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to upload file to storage: {str(upload_error)}"
+            )
+
+        # Extract text content from file
+        try:
+            text_content = await extract_text_from_file(
+                file_content=file_content,
+                filename=file.filename or "document.txt",
+                content_type=file.content_type or "text/plain"
+            )
+        except Exception as extract_error:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to extract text from file: {str(extract_error)}"
+            )
+
+        # Save document to database with file URL
         document = await save_document(
             kb_id=kb["kb_id"],
             filename=file.filename or "document.txt",
             content=text_content,
-            content_type=file.content_type or "text/plain"
+            content_type=file.content_type or "text/plain",
+            file_url=file_url
         )
-        
+
+        # Update the document with the generated doc_id
+        db.table("documents").update({"doc_id": doc_id}).eq("doc_id", document["doc_id"]).execute()
+        document["doc_id"] = doc_id
+
         # Process document in background
-        success = process_company_document(
+        success = await process_company_document(
             company_id=user.company_id,
             document_content=text_content,
-            doc_id=document["doc_id"]
+            doc_id=doc_id
         )
-        
+
         if not success:
             raise HTTPException(
                 status_code=500,
                 detail="Failed to process document"
             )
-        
+
         return {
             "message": "Document uploaded and processed successfully",
-            "document": document,
+            "document": {
+                **document,
+                "file_url": file_url
+            },
             "knowledge_base": kb
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -466,7 +507,7 @@ async def upload_text_content(
         )
         
         # Process document
-        success = process_company_document(
+        success = await process_company_document(
             company_id=user.company_id,
             document_content=document_data.content,
             doc_id=document["doc_id"]
@@ -602,31 +643,34 @@ async def clear_rag_cache(
 async def ensure_company_knowledge_base(company_id: str):
     """
     Ensure knowledge base is set up for a company.
-    If not exists, create it with dummy data.
+    Each company has their own dedicated Pinecone index.
     """
     try:
-        # Check Pinecone index stats directly
-        from app.services.langchain_service import pc, BASE_INDEX_NAME, get_company_namespace
-        
-        namespace = get_company_namespace(company_id)
-        index = pc.Index(BASE_INDEX_NAME)
+        # Check if company's Pinecone index exists and has vectors
+        index_name = get_company_index_name(company_id)
+        pc = get_pinecone_client()
+
+        # Check if index exists
+        existing_indexes = [idx["name"] for idx in pc.list_indexes()]
+
+        if index_name not in existing_indexes:
+            # No index exists - company should upload documents
+            return
+
+        # Check if index has vectors
+        index = pc.Index(index_name)
         stats = index.describe_index_stats()
-        
-        # Check if company namespace exists and has vectors
-        has_vectors = False
-        if stats.namespaces and namespace in stats.namespaces:
-            vector_count = stats.namespaces[namespace].vector_count
-            has_vectors = vector_count > 0
-        
+
+        has_vectors = stats.total_vector_count > 0
+
         if has_vectors:
             # Clear any stale cache to ensure fresh connections
-            from app.services.langchain_service import clear_company_cache
             clear_company_cache(company_id)
             return
-        
+
         # No vectors found - company should upload documents
         return
-            
-    except Exception as e:
+
+    except Exception:
         # If any error occurs, preserve existing content
         return 

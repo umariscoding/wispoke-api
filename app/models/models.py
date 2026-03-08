@@ -179,8 +179,21 @@ class ChatbotInfoModel(BaseModel):
     chatbot_title: Optional[str] = None
     chatbot_description: Optional[str] = None
 
+class BatchUpdateSettingsModel(BaseModel):
+    slug: Optional[str] = None
+    chatbot_title: Optional[str] = None
+    chatbot_description: Optional[str] = None
+    is_published: Optional[bool] = None
+
 
 class PublicChatMessage(BaseModel):
     message: str
     chat_id: Optional[str] = None
-    model: str = "OpenAI"
+    model: str = "Llama-instant"  # Default to fast Llama model
+
+class EmbedSettingsModel(BaseModel):
+    theme: Optional[str] = "dark"  # dark, light
+    position: Optional[str] = "right"  # left, right
+    primaryColor: Optional[str] = "#6366f1"
+    welcomeText: Optional[str] = "Hi there! How can we help you today?"
+    subtitleText: Optional[str] = "We typically reply instantly"

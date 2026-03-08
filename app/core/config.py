@@ -1,6 +1,7 @@
 from pydantic_settings import BaseSettings
 from functools import lru_cache
 from typing import Optional
+import os
 
 class Settings(BaseSettings):
     """
@@ -9,17 +10,22 @@ class Settings(BaseSettings):
     """
     
     # API Keys
-    openai_api_key: Optional[str] = None
-    pinecone_api_key: Optional[str] = None
-    
+    openai_api_key: Optional[str] = os.getenv("OPENAI_API_KEY")
+    cohere_api_key: Optional[str] = os.getenv("COHERE_API_KEY")
+    groq_api_key: Optional[str] = os.getenv("GROQ_API_KEY")
+    anthropic_api_key: Optional[str] = os.getenv("ANTHROPIC_API_KEY")
+    pinecone_api_key: Optional[str] = os.getenv("PINECONE_API_KEY")
+    supabase_url: Optional[str] = os.getenv("SUPABASE_URL")
+    supabase_key: Optional[str] = os.getenv("SUPABASE_KEY")
+
     # JWT Configuration
     jwt_secret_key: str = "your-secret-key-change-this-in-production"
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 30
     refresh_token_expire_days: int = 7
-    
+
     # AI Configuration
-    embedding_model: str = "text-embedding-3-small"
+    embedding_model: str = "embed-english-v3.0"  # Cohere embedding model
     
     # Database
     database_url: str = "postgresql://username:password@localhost:5432/chatelio_db"
