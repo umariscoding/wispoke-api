@@ -4,12 +4,14 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse
-from app.api.endpoints import router as api_router
-from app.api.auth_endpoints import router as auth_router
-from app.api.user_endpoints import router as user_router
-from app.api.chat_endpoints import router as chat_router
-from app.api.public_endpoints import router as public_router
-from app.api.analytics_endpoints import router as analytics_router
+
+from app.features.auth.router import router as auth_router
+from app.features.users.router import router as user_router
+from app.features.chat.router import router as chat_router
+from app.features.documents.router import router as documents_router
+from app.features.public.router import router as public_router
+from app.features.analytics.router import router as analytics_router
+from app.features.legacy.router import router as legacy_router
 
 app = FastAPI()
 
@@ -38,21 +40,21 @@ async def subdomain_middleware(request: Request, call_next):
     """
     Middleware to detect and extract subdomain information from requests.
     Sets subdomain info in request.state for use by endpoints.
-    
+
     Examples:
     - kfcchatbot.mysite.com → subdomain="kfcchatbot", is_subdomain_request=True
-    - www.mysite.com → subdomain="www", is_subdomain_request=False  
+    - www.mysite.com → subdomain="www", is_subdomain_request=False
     - mysite.com → subdomain=None, is_subdomain_request=False
     - localhost:8000 → subdomain=None, is_subdomain_request=False
     - imrankhan.localhost:3001 → subdomain="imrankhan", is_subdomain_request=True
     """
     host = request.headers.get("host", "").lower()
     subdomain = None
-    
+
     # Extract subdomain
     if "." in host:
         parts = host.split(".")
-        
+
         # Handle different domain formats
         if len(parts) >= 3:  # Production: subdomain.domain.tld
             subdomain = parts[0].split(":")[0]  # Remove port if present
@@ -61,26 +63,26 @@ async def subdomain_middleware(request: Request, call_next):
             domain_part = parts[1].split(":")[0]  # Remove port from domain part
             if domain_part == "localhost" or not "." in parts[1]:
                 subdomain = parts[0].split(":")[0]  # Remove port if present
-    
+
     # Determine if this is a chatbot subdomain request
     is_subdomain_request = (
-        subdomain is not None and 
+        subdomain is not None and
         subdomain not in ["www", "api", "admin", "dashboard"] and
         len(subdomain) >= 3  # Minimum slug length
     )
-    
+
     # Store in request state
     request.state.subdomain = subdomain
     request.state.is_subdomain_request = is_subdomain_request
     request.state.original_host = host
-    
+
     # Log subdomain detection for debugging
     logger.info(f"Host: {host} → Subdomain: {subdomain}, Is subdomain request: {is_subdomain_request}")
     if is_subdomain_request:
         logger.info(f"✅ Detected chatbot subdomain: {subdomain} from host: {host}")
     else:
         logger.info(f"ℹ️  No valid subdomain detected from host: {host}")
-    
+
     response = await call_next(request)
     return response
 
@@ -102,13 +104,14 @@ async def log_requests(request: Request, call_next):
     response = await call_next(request)
     return response
 
-# Include the routers
+# Include feature routers
 app.include_router(auth_router)
 app.include_router(user_router)
 app.include_router(chat_router)
+app.include_router(documents_router)
 app.include_router(public_router)
 app.include_router(analytics_router)
-app.include_router(api_router)
+app.include_router(legacy_router)
 
 # Serve embed widget script
 @app.get("/embed.js")
@@ -128,7 +131,10 @@ async def serve_embed_script():
 @app.get("/preview/{company_slug}")
 async def serve_widget_preview(company_slug: str, request: Request):
     """Serve a full-page preview of the embed widget for a company."""
-    base_url = str(request.base_url).rstrip("/").replace("http://", "https://", 1)
+    base_url = str(request.base_url).rstrip("/")
+    # Only upgrade to HTTPS in production (not localhost)
+    if "localhost" not in base_url and "127.0.0.1" not in base_url:
+        base_url = base_url.replace("http://", "https://", 1)
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
