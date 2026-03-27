@@ -1,69 +1,171 @@
 """
-Chat repository — data access for chats and messages.
+Chat & message database operations (synchronous).
 """
 
+import time
 from typing import Dict, Any, Optional, List
-from app.db.operations.chat import (
-    create_chat as db_create_chat,
-    get_chat_by_id as db_get_chat_by_id,
-    fetch_company_chats as db_fetch_company_chats,
-    update_chat_title as db_update_chat_title,
-    delete_chat as db_delete_chat,
-)
-from app.db.operations.message import (
-    save_message as db_save_message,
-    fetch_messages as db_fetch_messages,
-)
-from app.db.operations.company import get_company_by_id
+
+from langchain_core.chat_history import InMemoryChatMessageHistory
+
+from app.core.database import db, generate_id
+from app.core.pagination import PaginationParams, make_paginated_result
 
 
-async def get_company(company_id: str) -> Optional[Dict[str, Any]]:
-    return await get_company_by_id(company_id)
+# ---------------------------------------------------------------------------
+# Chats
+# ---------------------------------------------------------------------------
 
-
-async def create_chat(
+def create_chat(
     company_id: str,
-    chat_id: str,
-    title: str,
-    user_id: str = None,
-    session_id: str = None,
+    user_id: Optional[str] = None,
+    title: Optional[str] = "New Chat",
+    session_id: Optional[str] = None,
+    chat_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    return await db_create_chat(
-        company_id=company_id,
-        chat_id=chat_id,
-        title=title,
-        user_id=user_id,
-        session_id=session_id,
+    chat_data: Dict[str, Any] = {
+        "chat_id": chat_id or generate_id(),
+        "company_id": company_id,
+        "user_id": user_id,
+        "title": title,
+        "is_deleted": False,
+        "is_guest": session_id is not None,
+    }
+    if session_id:
+        chat_data["session_id"] = session_id
+    res = db.table("chats").insert(chat_data).execute()
+    return res.data[0]
+
+
+def get_chat_by_id(chat_id: str) -> Optional[Dict[str, Any]]:
+    res = db.table("chats").select("*").eq("chat_id", chat_id).execute()
+    return res.data[0] if res.data else None
+
+
+def get_chats_by_company(company_id: str, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    query = (
+        db.table("chats").select("*")
+        .eq("company_id", company_id).eq("is_deleted", False)
+        .order("created_at", desc=True)
     )
+    if user_id:
+        query = query.eq("user_id", user_id)
+    return query.execute().data or []
 
 
-async def get_chat_by_id(chat_id: str) -> Optional[Dict[str, Any]]:
-    return await db_get_chat_by_id(chat_id)
-
-
-async def fetch_company_chats(
-    company_id: str, user_id: str = None, session_id: str = None
+def fetch_company_chats(
+    company_id: str, user_id: Optional[str] = None, session_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    return await db_fetch_company_chats(
-        company_id=company_id, user_id=user_id, session_id=session_id
+    query = (
+        db.table("chats").select("*")
+        .eq("company_id", company_id).eq("is_deleted", False)
+        .order("created_at", desc=True)
     )
+    if user_id:
+        query = query.eq("user_id", user_id)
+    if session_id:
+        query = query.eq("session_id", session_id)
+    return query.execute().data or []
 
 
-async def update_chat_title(company_id: str, chat_id: str, title: str) -> bool:
-    return await db_update_chat_title(company_id, chat_id, title)
+def fetch_company_chats_paginated(
+    company_id: str, user_id: Optional[str] = None,
+    session_id: Optional[str] = None, page: int = 1, page_size: int = 20,
+) -> dict:
+    p = PaginationParams(page, page_size)
+    count_q = db.table("chats").select("chat_id", count="exact").eq("company_id", company_id).eq("is_deleted", False)
+    if user_id:
+        count_q = count_q.eq("user_id", user_id)
+    if session_id:
+        count_q = count_q.eq("session_id", session_id)
+    total = count_q.execute().count or 0
 
-
-async def delete_chat(company_id: str, chat_id: str) -> bool:
-    return await db_delete_chat(company_id, chat_id)
-
-
-async def save_message(
-    company_id: str, chat_id: str, role: str, content: str
-) -> Dict[str, Any]:
-    return await db_save_message(
-        company_id=company_id, chat_id=chat_id, role=role, content=content
+    data_q = (
+        db.table("chats").select("*")
+        .eq("company_id", company_id).eq("is_deleted", False)
+        .order("created_at", desc=True).range(p.range_start, p.range_end)
     )
+    if user_id:
+        data_q = data_q.eq("user_id", user_id)
+    if session_id:
+        data_q = data_q.eq("session_id", session_id)
+    return make_paginated_result(data_q.execute().data or [], total, page, page_size)
 
+
+def verify_chat_access(
+    company_id: str, chat_id: str,
+    user_id: Optional[str] = None, session_id: Optional[str] = None,
+) -> bool:
+    query = db.table("chats").select("chat_id").eq("company_id", company_id).eq("chat_id", chat_id).eq("is_deleted", False)
+    if user_id:
+        query = query.eq("user_id", user_id)
+    if session_id:
+        query = query.eq("session_id", session_id)
+    return bool(query.execute().data)
+
+
+def update_chat_title(company_id: str, chat_id: str, title: str) -> bool:
+    res = db.table("chats").update({"title": title}).eq("chat_id", chat_id).eq("company_id", company_id).execute()
+    return len(res.data) > 0
+
+
+def delete_chat(company_id: str, chat_id: str) -> bool:
+    res = db.table("chats").update({"is_deleted": True}).eq("chat_id", chat_id).eq("company_id", company_id).execute()
+    return len(res.data) > 0
+
+
+def fetch_all_chats_by_company(company_id: str) -> List[Dict[str, Any]]:
+    return db.table("chats").select("*").eq("company_id", company_id).eq("is_deleted", False).execute().data or []
+
+
+def load_session_history(company_id: str, chat_id: str) -> InMemoryChatMessageHistory:
+    history = InMemoryChatMessageHistory()
+    for msg in fetch_messages(company_id, chat_id):
+        if msg["role"] == "human":
+            history.add_user_message(msg["content"])
+        elif msg["role"] == "ai":
+            history.add_ai_message(msg["content"])
+    return history
+
+
+# ---------------------------------------------------------------------------
+# Messages
+# ---------------------------------------------------------------------------
 
 def fetch_messages(company_id: str, chat_id: str) -> List[Dict[str, Any]]:
-    return db_fetch_messages(company_id, chat_id)
+    return (
+        db.table("messages").select("*")
+        .eq("company_id", company_id).eq("chat_id", chat_id)
+        .order("created_at", desc=False).execute()
+    ).data or []
+
+
+def fetch_messages_paginated(
+    company_id: str, chat_id: str, page: int = 1, page_size: int = 50,
+) -> dict:
+    p = PaginationParams(page, page_size)
+    total = (
+        db.table("messages").select("message_id", count="exact")
+        .eq("company_id", company_id).eq("chat_id", chat_id).execute()
+    ).count or 0
+    data = (
+        db.table("messages").select("*")
+        .eq("company_id", company_id).eq("chat_id", chat_id)
+        .order("created_at", desc=False).range(p.range_start, p.range_end).execute()
+    ).data or []
+    return make_paginated_result(data, total, page, page_size)
+
+
+def save_message(company_id: str, chat_id: str, role: str, content: str) -> Dict[str, Any]:
+    return db.table("messages").insert({
+        "message_id": generate_id(), "company_id": company_id,
+        "chat_id": chat_id, "role": role, "content": content,
+        "timestamp": int(time.time() * 1000),
+    }).execute().data[0]
+
+
+def get_messages_by_chat(company_id: str, chat_id: str) -> List[Dict[str, Any]]:
+    return fetch_messages(company_id, chat_id)
+
+
+def fetch_all_messages_by_company(company_id: str) -> List[Dict[str, Any]]:
+    return db.table("messages").select("*").eq("company_id", company_id).execute().data or []

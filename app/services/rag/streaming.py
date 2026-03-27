@@ -3,129 +3,96 @@ Response streaming for RAG chains.
 """
 
 import asyncio
+import logging
 from typing import AsyncGenerator
-from .rag_chain import get_company_rag_chain
-from .api_keys import (
-    get_groq_api_key,
-    get_openai_api_key,
-    get_cohere_api_key,
-    get_anthropic_api_key,
-    get_pinecone_api_key,
-)
-from app.db.operations.company import get_company_by_id
 
-# All model IDs that route through Groq
-GROQ_MODELS = {"Groq", "Llama-instant", "Llama-large", "GPT-OSS-120B", "GPT-OSS-20B"}
+from .chain import get_company_rag_chain
+from .providers import get_groq_api_key, get_openai_api_key, get_cohere_api_key, get_anthropic_api_key, get_pinecone_api_key, GROQ_MODELS
+from app.features.auth.repository import get_company_by_id
+
+logger = logging.getLogger(__name__)
 
 
 async def stream_company_response(
-    company_id: str, query: str, chat_id: str, llm_model: str = "Llama-large"  # noqa: ARG001 — ignored, model resolved from DB
+    company_id: str, query: str, chat_id: str, llm_model: str = "Llama-large"
 ) -> AsyncGenerator[str, None]:
     """
     Stream response from company-specific RAG chain.
-    The llm_model parameter is ignored — the model is always resolved from the
-    company's saved settings in the database.
-
-    Args:
-        company_id: Company ID
-        query: User query
-        chat_id: Chat ID
-        llm_model: Ignored. Model is resolved from company DB settings.
-
-    Yields:
-        Response chunks
+    The llm_model parameter is ignored — model is resolved from DB settings.
     """
     try:
-        # Resolve the company's configured model from DB
-        company = await get_company_by_id(company_id)
+        company = get_company_by_id(company_id)
         resolved_model = (company.get("default_model") or "Llama-large") if company else "Llama-large"
 
-        # Check API keys based on the resolved model
-        if resolved_model in GROQ_MODELS:
-            groq_key = get_groq_api_key()
-            if not groq_key or groq_key == "your-groq-api-key-here":
-                yield "Error: Groq API key not configured. Please create a .env file in the project root and set GROQ_API_KEY=your-actual-groq-key. You can get an API key from https://console.groq.com/"
-                return
-        elif resolved_model == "OpenAI":
-            openai_key = get_openai_api_key()
-            if not openai_key or openai_key == "your-openai-api-key-here":
-                yield "Error: OpenAI API key not configured. Please create a .env file in the project root and set OPENAI_API_KEY=your-actual-openai-key. You can get an API key from https://platform.openai.com/api-keys"
-                return
-        elif resolved_model == "Claude":
-            anthropic_key = get_anthropic_api_key()
-            if not anthropic_key or anthropic_key == "your-anthropic-api-key-here":
-                yield "Error: Anthropic API key not configured. Please create a .env file in the project root and set ANTHROPIC_API_KEY=your-actual-anthropic-key. You can get an API key from https://console.anthropic.com/"
-                return
-        elif resolved_model == "Cohere":
-            cohere_key = get_cohere_api_key()
-            if not cohere_key or cohere_key == "your-cohere-api-key-here":
-                yield "Error: Cohere API key not configured. Please create a .env file in the project root and set COHERE_API_KEY=your-actual-cohere-key. You can get an API key from https://cohere.com/"
-                return
-
-        # Check if Pinecone API key is available
-        pinecone_key = get_pinecone_api_key()
-        if not pinecone_key or pinecone_key == "your-pinecone-api-key-here":
-            yield "Error: Pinecone API key not configured. Please create a .env file in the project root and set PINECONE_API_KEY=your-actual-pinecone-key. You can get an API key from https://pinecone.io/"
+        error = _check_api_key(resolved_model)
+        if error:
+            yield error
             return
 
-        # Get company-specific RAG chain
-        try:
-            rag_chain = await get_company_rag_chain(company_id, resolved_model)
-        except Exception as chain_error:
-            error_msg = str(chain_error)
+        pinecone_key = get_pinecone_api_key()
+        if not pinecone_key or pinecone_key.startswith("your-"):
+            yield "Error: Pinecone API key not configured."
+            return
 
-            # Provide specific error messages
-            if "unsupported operand" in error_msg.lower():
-                yield "Error: Internal retriever compatibility issue. Please try again or contact support."
-            elif "pinecone" in error_msg.lower():
+        try:
+            rag_chain = get_company_rag_chain(company_id, resolved_model)
+        except Exception as chain_error:
+            error_msg = str(chain_error).lower()
+            if "pinecone" in error_msg:
                 yield "Error: Knowledge base connection failed. Please ensure documents are uploaded."
-            elif (
-                "groq" in error_msg.lower()
-                or "openai" in error_msg.lower()
-                or "api" in error_msg.lower()
-            ):
+            elif any(k in error_msg for k in ("groq", "openai", "api")):
                 yield "Error: AI service connection failed. Please check API configuration."
             else:
-                yield f"Error: Failed to initialize chat system. Details: {error_msg}"
+                yield f"Error: Failed to initialize chat system. Details: {chain_error}"
             return
 
-        # Stream response
         try:
             resp = rag_chain.stream(
                 {"input": query},
                 config={"configurable": {"session_id": chat_id}},
             )
-
             response_started = False
-
             for chunk in resp:
-                # The manual chains return the response directly as a string
-                if isinstance(chunk, str):
+                if isinstance(chunk, str) and chunk:
                     response_started = True
-                    if chunk:
-                        yield chunk
-                        await asyncio.sleep(0.03)
-                # Fallback for dict format (backward compatibility)
-                elif isinstance(chunk, dict) and "answer" in chunk:
+                    yield chunk
+                    await asyncio.sleep(0.03)
+                elif isinstance(chunk, dict) and "answer" in chunk and chunk["answer"]:
                     response_started = True
-                    chunk_content = chunk["answer"]
-                    if chunk_content:
-                        yield chunk_content
-                        await asyncio.sleep(0.03)
+                    yield chunk["answer"]
+                    await asyncio.sleep(0.03)
 
-            # If no response was generated
             if not response_started:
-                yield "I apologize, but I couldn't generate a response. Please try again or contact support if the issue persists."
+                yield "I apologize, but I couldn't generate a response. Please try again."
 
         except Exception as stream_error:
-            yield f"Error: Failed to generate response. Details: {str(stream_error)}"
-            return
+            yield f"Error: Failed to generate response. Details: {stream_error}"
 
     except Exception as e:
-        error_msg = str(e)
-        if "api key" in error_msg.lower() or "unauthorized" in error_msg.lower():
-            yield "Error: Invalid or missing API key. Please check your API key configuration."
-        elif "pinecone" in error_msg.lower():
-            yield "Error: Pinecone connection failed. Please check your Pinecone API key configuration."
+        error_msg = str(e).lower()
+        if "api key" in error_msg or "unauthorized" in error_msg:
+            yield "Error: Invalid or missing API key. Please check your configuration."
+        elif "pinecone" in error_msg:
+            yield "Error: Pinecone connection failed."
         else:
-            yield f"Error: {error_msg}"
+            yield f"Error: {e}"
+
+
+def _check_api_key(model: str) -> str | None:
+    if model in GROQ_MODELS:
+        key = get_groq_api_key()
+        if not key or key.startswith("your-"):
+            return "Error: Groq API key not configured."
+    elif model == "OpenAI":
+        key = get_openai_api_key()
+        if not key or key.startswith("your-"):
+            return "Error: OpenAI API key not configured."
+    elif model == "Claude":
+        key = get_anthropic_api_key()
+        if not key or key.startswith("your-"):
+            return "Error: Anthropic API key not configured."
+    elif model == "Cohere":
+        key = get_cohere_api_key()
+        if not key or key.startswith("your-"):
+            return "Error: Cohere API key not configured."
+    return None

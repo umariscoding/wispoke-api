@@ -1,7 +1,8 @@
 """
 Application-level exceptions.
 
-Services raise these; routers catch them and convert to HTTP responses.
+Services raise these; the global exception handler in main.py
+converts them to HTTP responses. Routers never need try/except.
 """
 
 
@@ -36,6 +37,12 @@ class ValidationError(AppException):
 class ConflictError(AppException):
     def __init__(self, message: str = "Resource already exists"):
         super().__init__(message, status_code=409)
+
+
+class RateLimitError(AppException):
+    def __init__(self, message: str = "Too many requests", retry_after: int = 60):
+        self.retry_after = retry_after
+        super().__init__(message, status_code=429)
 
 
 class InternalError(AppException):

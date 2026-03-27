@@ -6,12 +6,12 @@ No HTTP concepts (no Request, no HTTPException). Raises domain exceptions.
 import re
 from typing import Dict, Any
 
-from app.auth.jwt import (
+from app.core.security import (
     create_company_tokens,
     refresh_access_token as jwt_refresh_access_token,
     get_current_user_info,
+    get_password_hash,
 )
-from app.utils.password import get_password_hash
 from app.core.exceptions import (
     NotFoundError,
     AuthenticationError,
@@ -19,8 +19,18 @@ from app.core.exceptions import (
     InternalError,
 )
 from app.core.config import get_chatbot_url
-from app.features.auth import repository as repo
-
+from app.features.auth.repository import (
+    create_company,
+    authenticate_company,
+    get_company_by_id,
+    update_company_slug as db_update_company_slug,
+    publish_chatbot as db_publish_chatbot,
+    update_chatbot_info as db_update_chatbot_info,
+    batch_update_settings as db_batch_update_settings,
+    get_embed_settings as db_get_embed_settings,
+    update_embed_settings as db_update_embed_settings,
+)
+from app.features.users.repository import get_users_by_company_paginated
 
 VALID_MODELS = [
     "Llama-instant", "Llama-large", "GPT-OSS-120B",
@@ -29,57 +39,53 @@ VALID_MODELS = [
 VALID_TONES = ["professional", "friendly", "casual", "formal", "witty"]
 
 
-async def register_company(name: str, email: str, password: str) -> Dict[str, Any]:
+def register_company(name: str, email: str, password: str) -> Dict[str, Any]:
     hashed_password = get_password_hash(password)
-    company = await repo.create_company_record(name, email, hashed_password)
-    tokens = create_company_tokens(
-        company_id=company["company_id"], email=company["email"]
-    )
+    company = create_company(name=name, email=email, password=hashed_password)
+    tokens = create_company_tokens(company_id=company["company_id"], email=company["email"])
     return {"message": "Company registered successfully", "company": company, "tokens": tokens}
 
 
-async def login_company(email: str, password: str) -> Dict[str, Any]:
-    company = await repo.authenticate_company_record(email, password)
+def login_company(email: str, password: str) -> Dict[str, Any]:
+    company = authenticate_company(email=email, password=password)
     if not company:
         raise AuthenticationError("Invalid email or password")
-    tokens = create_company_tokens(
-        company_id=company["company_id"], email=company["email"]
-    )
+    tokens = create_company_tokens(company_id=company["company_id"], email=company["email"])
     return {"message": "Login successful", "company": company, "tokens": tokens}
 
 
-async def get_company_profile(company_id: str) -> Dict[str, Any]:
-    company = await repo.get_company(company_id)
+def get_company_profile(company_id: str) -> Dict[str, Any]:
+    company = get_company_by_id(company_id)
     if not company:
         raise NotFoundError("Company not found")
     return {"company": company}
 
 
-async def refresh_tokens(refresh_token: str) -> Dict[str, Any]:
+def refresh_tokens(refresh_token: str) -> Dict[str, Any]:
     new_access_token = jwt_refresh_access_token(refresh_token)
     if not new_access_token:
         raise AuthenticationError("Invalid refresh token")
     return {"access_token": new_access_token, "token_type": "bearer"}
 
 
-async def verify_token_info(token: str) -> Dict[str, Any]:
+def verify_token_info(token: str) -> Dict[str, Any]:
     user_info = get_current_user_info(token)
     if not user_info:
         raise AuthenticationError("Invalid token")
     return {"valid": True, "user_info": user_info}
 
 
-async def logout_company(company_id: str) -> Dict[str, Any]:
+def logout_company(company_id: str) -> Dict[str, Any]:
     return {"message": "Logout successful", "company_id": company_id}
 
 
-async def update_company_slug(company_id: str, slug: str) -> Dict[str, Any]:
-    if not re.match(r'^[a-zA-Z0-9-_]+$', slug):
+def update_company_slug(company_id: str, slug: str) -> Dict[str, Any]:
+    if not re.match(r'^[a-zA-Z0-9\-_]+$', slug):
         raise ValidationError("Slug must contain only letters, numbers, hyphens, and underscores")
     if len(slug) < 3 or len(slug) > 50:
         raise ValidationError("Slug must be between 3 and 50 characters long")
 
-    success = await repo.update_slug(company_id, slug)
+    success = db_update_company_slug(company_id=company_id, slug=slug)
     if not success:
         raise InternalError("Failed to update slug")
 
@@ -90,19 +96,19 @@ async def update_company_slug(company_id: str, slug: str) -> Dict[str, Any]:
     }
 
 
-async def publish_chatbot(company_id: str, is_published: bool) -> Dict[str, Any]:
-    company = await repo.get_company(company_id)
+def publish_chatbot(company_id: str, is_published: bool) -> Dict[str, Any]:
+    company = get_company_by_id(company_id)
     if not company:
         raise NotFoundError("Company not found")
 
     if is_published and not company.get("slug"):
         raise ValidationError("Company must have a slug before publishing. Please set a slug first.")
 
-    success = await repo.set_publish_status(company_id, is_published)
+    success = db_publish_chatbot(company_id=company_id, is_published=is_published)
     if not success:
         raise InternalError("Failed to update publishing status")
 
-    response_data = {
+    response_data: Dict[str, Any] = {
         "message": f"Chatbot {'published' if is_published else 'unpublished'} successfully",
         "is_published": is_published,
     }
@@ -111,17 +117,19 @@ async def publish_chatbot(company_id: str, is_published: bool) -> Dict[str, Any]
     return response_data
 
 
-async def update_chatbot_info(
+def update_chatbot_info(
     company_id: str, chatbot_title: str = None, chatbot_description: str = None
 ) -> Dict[str, Any]:
     if chatbot_title is None and chatbot_description is None:
         raise ValidationError("At least one field (chatbot_title or chatbot_description) must be provided")
 
-    success = await repo.update_chatbot_info_record(company_id, chatbot_title, chatbot_description)
+    success = db_update_chatbot_info(
+        company_id=company_id, chatbot_title=chatbot_title, chatbot_description=chatbot_description
+    )
     if not success:
         raise InternalError("Failed to update chatbot information")
 
-    response_data = {"message": "Chatbot information updated successfully"}
+    response_data: Dict[str, Any] = {"message": "Chatbot information updated successfully"}
     if chatbot_title is not None:
         response_data["chatbot_title"] = chatbot_title
     if chatbot_description is not None:
@@ -129,11 +137,10 @@ async def update_chatbot_info(
     return response_data
 
 
-async def get_chatbot_status(company_id: str) -> Dict[str, Any]:
-    company = await repo.get_company(company_id)
+def get_chatbot_status(company_id: str) -> Dict[str, Any]:
+    company = get_company_by_id(company_id)
     if not company:
         raise NotFoundError("Company not found")
-
     return {
         "company_id": company["company_id"],
         "slug": company.get("slug"),
@@ -141,25 +148,32 @@ async def get_chatbot_status(company_id: str) -> Dict[str, Any]:
         "published_at": company.get("published_at"),
         "chatbot_title": company.get("chatbot_title"),
         "chatbot_description": company.get("chatbot_description"),
-        "public_url": get_chatbot_url(company["slug"]) if company.get("slug") and company.get("is_published") else None,
+        "public_url": (
+            get_chatbot_url(company["slug"])
+            if company.get("slug") and company.get("is_published")
+            else None
+        ),
     }
 
 
-async def get_company_users(company_id: str) -> Dict[str, Any]:
-    company = await repo.get_company(company_id)
+def get_company_users(company_id: str, page: int = 1, page_size: int = 20) -> Dict[str, Any]:
+    company = get_company_by_id(company_id)
     if not company:
         raise NotFoundError("Company not found")
 
-    users = await repo.get_company_users(company_id)
+    result = get_users_by_company_paginated(company_id, page, page_size)
     return {
         "company_id": company_id,
         "company_name": company["name"],
-        "users": users,
-        "total_users": len(users),
+        "users": result["items"],
+        "total_users": result["total"],
+        "page": result["page"],
+        "page_size": result["page_size"],
+        "total_pages": result["total_pages"],
     }
 
 
-async def batch_update_settings(company_id: str, **kwargs) -> Dict[str, Any]:
+def batch_update_settings(company_id: str, **kwargs) -> Dict[str, Any]:
     slug = kwargs.get("slug")
     is_published = kwargs.get("is_published")
     default_model = kwargs.get("default_model")
@@ -169,13 +183,13 @@ async def batch_update_settings(company_id: str, **kwargs) -> Dict[str, Any]:
         raise ValidationError("At least one field must be provided")
 
     if slug is not None:
-        if not re.match(r'^[a-z0-9-]+$', slug):
+        if not re.match(r'^[a-z0-9\-]+$', slug):
             raise ValidationError("Slug must contain only lowercase letters, numbers, and hyphens")
         if len(slug) < 3 or len(slug) > 50:
             raise ValidationError("Slug must be between 3 and 50 characters long")
 
     if is_published:
-        company = await repo.get_company(company_id)
+        company = get_company_by_id(company_id)
         if not company:
             raise NotFoundError("Company not found")
         if slug is None and not company.get("slug"):
@@ -187,7 +201,7 @@ async def batch_update_settings(company_id: str, **kwargs) -> Dict[str, Any]:
     if tone is not None and tone not in VALID_TONES:
         raise ValidationError(f"Invalid tone. Must be one of: {', '.join(VALID_TONES)}")
 
-    updated_company = await repo.batch_update_settings_record(company_id=company_id, **kwargs)
+    updated_company = db_batch_update_settings(company_id=company_id, **kwargs)
     if not updated_company:
         raise InternalError("Failed to update settings")
 
@@ -202,13 +216,13 @@ async def batch_update_settings(company_id: str, **kwargs) -> Dict[str, Any]:
     return {"message": "Settings updated successfully", "company": updated_company}
 
 
-async def get_embed_settings(company_id: str) -> Dict[str, Any]:
-    settings = await repo.get_embed_settings_record(company_id)
+def get_embed_settings(company_id: str) -> Dict[str, Any]:
+    settings = db_get_embed_settings(company_id)
     return {"settings": settings}
 
 
-async def update_embed_settings(company_id: str, **kwargs) -> Dict[str, Any]:
-    updated_settings = await repo.update_embed_settings_record(company_id, **kwargs)
+def update_embed_settings(company_id: str, **kwargs) -> Dict[str, Any]:
+    updated_settings = db_update_embed_settings(company_id=company_id, **kwargs)
     if updated_settings is None:
         raise NotFoundError("Company not found")
     return {"message": "Embed settings updated successfully", "settings": updated_settings}

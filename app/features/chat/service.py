@@ -5,8 +5,9 @@ No HTTP concepts. Raises domain exceptions.
 
 import uuid
 import json
+import logging
 from io import StringIO
-from typing import Dict, Any, List, AsyncGenerator
+from typing import Dict, Any, AsyncGenerator
 
 from app.core.exceptions import NotFoundError
 from app.services.rag import (
@@ -15,14 +16,27 @@ from app.services.rag import (
     get_company_index_name,
     clear_company_cache,
 )
-from app.features.chat import repository as repo
+from app.features.chat.repository import (
+    create_chat,
+    get_chat_by_id,
+    fetch_company_chats_paginated,
+    verify_chat_access,
+    update_chat_title as db_update_chat_title,
+    delete_chat as db_delete_chat,
+    save_message,
+    fetch_messages_paginated,
+)
+from app.features.auth.repository import get_company_by_id
+
+logger = logging.getLogger(__name__)
 
 
-def safe_json_dumps(data):
-    return json.dumps(data, ensure_ascii=False, separators=(',', ':'))
+def _safe_json(data: dict) -> str:
+    return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
 
 
-async def ensure_company_knowledge_base(company_id: str):
+def ensure_company_knowledge_base(company_id: str) -> None:
+    """Best-effort check that the company's KB index has vectors."""
     try:
         index_name = get_company_index_name(company_id)
         pc = get_pinecone_client()
@@ -31,16 +45,13 @@ async def ensure_company_knowledge_base(company_id: str):
             return
         index = pc.Index(index_name)
         stats = index.describe_index_stats()
-        has_vectors = stats.total_vector_count > 0
-        if has_vectors:
+        if stats.total_vector_count > 0:
             clear_company_cache(company_id)
-            return
-        return
     except Exception:
-        return
+        pass
 
 
-async def send_message(
+def send_message(
     company_id: str,
     user_id: str,
     user_type: str,
@@ -51,17 +62,17 @@ async def send_message(
 ) -> tuple:
     """
     Orchestrate sending a message: ensure KB, create chat if needed, save message.
-    Returns (chat_id, stream_generator) for the router to wrap in StreamingResponse.
+    Returns (chat_id, async_stream_generator).
     """
-    await ensure_company_knowledge_base(company_id)
+    ensure_company_knowledge_base(company_id)
 
     chat_id = chat_id or str(uuid.uuid4())
-    existing_chat = await repo.get_chat_by_id(chat_id)
+    existing_chat = get_chat_by_id(chat_id)
 
     if not existing_chat:
         msg_user_id = user_id if user_type == "user" else None
         session_id = user_id if user_type == "guest" else None
-        await repo.create_chat(
+        create_chat(
             company_id=company_id,
             chat_id=chat_id,
             title=chat_title,
@@ -69,136 +80,124 @@ async def send_message(
             session_id=session_id,
         )
 
-    await repo.save_message(
-        company_id=company_id, chat_id=chat_id, role="human", content=message
-    )
+    save_message(company_id=company_id, chat_id=chat_id, role="human", content=message)
 
     response_buffer = StringIO()
 
-    async def stream_and_save():
+    async def stream_and_save() -> AsyncGenerator[str, None]:
         try:
-            async def generate_response():
-                try:
-                    start_data = {"chat_id": chat_id, "type": "start"}
-                    yield f"data: {safe_json_dumps(start_data)}\n\n"
+            yield f"data: {_safe_json({'chat_id': chat_id, 'type': 'start'})}\n\n"
 
-                    async for chunk in stream_company_response(
-                        company_id=company_id,
-                        query=message,
-                        chat_id=chat_id,
-                        llm_model=model,
-                    ):
-                        response_buffer.write(chunk)
-                        clean_chunk = chunk.replace(chr(10), ' ').replace(chr(13), ' ')
-                        chunk_data = {"content": clean_chunk, "type": "chunk"}
-                        yield f"data: {safe_json_dumps(chunk_data)}\n\n"
+            async for chunk in stream_company_response(
+                company_id=company_id,
+                query=message,
+                chat_id=chat_id,
+                llm_model=model,
+            ):
+                response_buffer.write(chunk)
+                clean_chunk = chunk.replace(chr(10), " ").replace(chr(13), " ")
+                yield f"data: {_safe_json({'content': clean_chunk, 'type': 'chunk'})}\n\n"
 
-                    end_data = {"type": "end"}
-                    yield f"data: {safe_json_dumps(end_data)}\n\n"
-
-                except Exception as stream_error:
-                    error_msg = str(stream_error)
-                    if "LocalProtocolError" not in error_msg and "Can't send data" not in error_msg:
-                        error_data = {"error": error_msg, "type": "error"}
-                        yield f"data: {safe_json_dumps(error_data)}\n\n"
-
-                finally:
-                    try:
-                        complete_response = response_buffer.getvalue()
-                        if complete_response.strip():
-                            await repo.save_message(
-                                company_id=company_id,
-                                chat_id=chat_id,
-                                role="ai",
-                                content=complete_response,
-                            )
-                    except Exception:
-                        pass
-
-            async for chunk in generate_response():
-                yield chunk
+            yield f"data: {_safe_json({'type': 'end'})}\n\n"
 
         except Exception as e:
             error_msg = str(e)
             if "LocalProtocolError" not in error_msg and "Can't send data" not in error_msg:
-                error_data = {"error": error_msg, "type": "error"}
-                yield f"data: {safe_json_dumps(error_data)}\n\n"
+                yield f"data: {_safe_json({'error': error_msg, 'type': 'error'})}\n\n"
+        finally:
+            try:
+                complete_response = response_buffer.getvalue()
+                if complete_response.strip():
+                    save_message(
+                        company_id=company_id,
+                        chat_id=chat_id,
+                        role="ai",
+                        content=complete_response,
+                    )
+            except Exception:
+                logger.warning("Failed to persist AI response for chat %s", chat_id, exc_info=True)
 
     return chat_id, stream_and_save()
 
 
-async def get_chat_history(
-    company_id: str, user_id: str, user_type: str, chat_id: str
+def get_chat_history(
+    company_id: str, user_id: str, user_type: str, chat_id: str,
+    page: int = 1, page_size: int = 50,
 ) -> Dict[str, Any]:
-    messages = repo.fetch_messages(company_id, chat_id)
+    _user_id = user_id if user_type == "user" else None
+    _session_id = user_id if user_type == "guest" else None
 
-    chats = await repo.fetch_company_chats(
-        company_id=company_id,
-        user_id=user_id if user_type == "user" else None,
-        session_id=user_id if user_type == "guest" else None,
-    )
-
-    chat_exists = any(chat["chat_id"] == chat_id for chat in chats)
-    if not chat_exists:
+    if not verify_chat_access(company_id, chat_id, user_id=_user_id, session_id=_session_id):
         raise NotFoundError("Chat not found or access denied")
 
-    return {"messages": messages}
+    result = fetch_messages_paginated(company_id, chat_id, page, page_size)
+    return {
+        "messages": result["items"],
+        "total": result["total"],
+        "page": result["page"],
+        "page_size": result["page_size"],
+        "total_pages": result["total_pages"],
+    }
 
 
-async def list_chats(
-    company_id: str, user_id: str, user_type: str
+def list_chats(
+    company_id: str, user_id: str, user_type: str,
+    page: int = 1, page_size: int = 20,
 ) -> Dict[str, Any]:
-    chats = await repo.fetch_company_chats(
+    _user_id = user_id if user_type == "user" else None
+    _session_id = user_id if user_type == "guest" else None
+
+    result = fetch_company_chats_paginated(
         company_id=company_id,
-        user_id=user_id if user_type == "user" else None,
-        session_id=user_id if user_type == "guest" else None,
+        user_id=_user_id,
+        session_id=_session_id,
+        page=page,
+        page_size=page_size,
     )
-    return {"chats": chats}
+    return {
+        "chats": result["items"],
+        "total": result["total"],
+        "page": result["page"],
+        "page_size": result["page_size"],
+        "total_pages": result["total_pages"],
+    }
 
 
-async def update_chat_title(
+def update_chat_title(
     company_id: str, user_id: str, user_type: str, chat_id: str, title: str
 ) -> Dict[str, str]:
-    chats = await repo.fetch_company_chats(
-        company_id=company_id,
-        user_id=user_id if user_type == "user" else None,
-        session_id=user_id if user_type == "guest" else None,
-    )
+    _user_id = user_id if user_type == "user" else None
+    _session_id = user_id if user_type == "guest" else None
 
-    chat_exists = any(chat["chat_id"] == chat_id for chat in chats)
-    if not chat_exists:
+    if not verify_chat_access(company_id, chat_id, user_id=_user_id, session_id=_session_id):
         raise NotFoundError("Chat not found or access denied")
 
-    await repo.update_chat_title(company_id, chat_id, title)
+    db_update_chat_title(company_id, chat_id, title)
     return {"message": "Chat title updated successfully"}
 
 
-async def delete_chat(
+def delete_chat(
     company_id: str, user_id: str, user_type: str, chat_id: str
 ) -> Dict[str, str]:
-    chats = await repo.fetch_company_chats(
-        company_id=company_id,
-        user_id=user_id if user_type == "user" else None,
-        session_id=user_id if user_type == "guest" else None,
-    )
+    _user_id = user_id if user_type == "user" else None
+    _session_id = user_id if user_type == "guest" else None
 
-    chat_exists = any(chat["chat_id"] == chat_id for chat in chats)
-    if not chat_exists:
+    if not verify_chat_access(company_id, chat_id, user_id=_user_id, session_id=_session_id):
         raise NotFoundError("Chat not found or access denied")
 
-    await repo.delete_chat(company_id, chat_id)
+    db_delete_chat(company_id, chat_id)
     return {"message": "Chat deleted successfully"}
 
 
-async def get_company_info(company_id: str) -> Dict[str, Any]:
-    company = await repo.get_company(company_id)
+def get_company_info(company_id: str) -> Dict[str, Any]:
+    company = get_company_by_id(company_id)
     if not company:
         raise NotFoundError("Company not found")
     return {
         "company": {
             "company_id": company["company_id"],
             "name": company["name"],
-            "plan": company["plan"],
-            "status": company["status"],
+            "plan": company.get("plan", "free"),
+            "status": company.get("status", "active"),
         }
     }

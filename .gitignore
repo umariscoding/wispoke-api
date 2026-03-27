@@ -1,7 +1,9 @@
 # Environment files
 .env
+.env.*
+!.env.example
 app/.env
-.json
+
 # Python
 __pycache__/
 *.py[cod]
@@ -52,3 +54,8 @@ chroma_db/
 
 # Railway
 .railway/
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage

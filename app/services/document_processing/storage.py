@@ -2,40 +2,18 @@
 Storage utilities for uploading and managing documents in Supabase.
 """
 
+import logging
 from pathlib import Path
-from supabase import create_client
-from app.core.config import settings
 
+from app.core.database import get_db
 
-# Supabase bucket name for documents
+logger = logging.getLogger(__name__)
+
 DOCUMENTS_BUCKET = "documents"
 
 
-def get_supabase_storage_client():
-    """
-    Get Supabase client for storage operations.
-
-    Returns:
-        Supabase client instance
-
-    Raises:
-        ValueError: If Supabase credentials are not configured
-    """
-    if not settings.supabase_url or not settings.supabase_key:
-        raise ValueError("Supabase URL and Key must be configured")
-    return create_client(settings.supabase_url, settings.supabase_key)
-
-
 def get_content_type(filename: str) -> str:
-    """
-    Get content type based on file extension.
-
-    Args:
-        filename: File name with extension
-
-    Returns:
-        MIME type string
-    """
+    """Get MIME type from file extension."""
     extension = Path(filename).suffix.lower()
     content_types = {
         ".pdf": "application/pdf",
@@ -46,77 +24,66 @@ def get_content_type(filename: str) -> str:
     return content_types.get(extension, "application/octet-stream")
 
 
+def _ensure_bucket(supabase) -> None:
+    """Create the documents bucket if it doesn't exist."""
+    try:
+        supabase.storage.get_bucket(DOCUMENTS_BUCKET)
+    except Exception:
+        try:
+            supabase.storage.create_bucket(
+                DOCUMENTS_BUCKET,
+                options={
+                    "public": True,
+                    "file_size_limit": 52428800,  # 50 MB
+                    "allowed_mime_types": [
+                        "application/pdf",
+                        "text/plain",
+                        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        "application/msword",
+                    ],
+                },
+            )
+        except Exception:
+            # Bucket may already exist (race condition) — safe to continue
+            logger.debug("Bucket creation skipped (may already exist)")
+
+
 async def upload_file_to_supabase(
     file_content: bytes, filename: str, company_id: str, doc_id: str
 ) -> str:
     """
-    Upload a file to Supabase storage.
+    Upload a file to Supabase storage and return the public URL.
 
-    Args:
-        file_content: Binary file content
-        filename: Original filename
-        company_id: Company ID for organization
-        doc_id: Document ID for unique identification
-
-    Returns:
-        Public URL of the uploaded file
-
-    Raises:
-        Exception: If upload fails
+    Kept as async for compatibility with the document upload router,
+    but the underlying Supabase SDK calls are synchronous.
     """
+    supabase = get_db()
+    file_path = f"{company_id}/{doc_id}/{filename}"
+
+    _ensure_bucket(supabase)
+
     try:
-        supabase = get_supabase_storage_client()
-
-        # Create a unique path: company_id/doc_id/filename
-        file_path = f"{company_id}/{doc_id}/{filename}"
-
-        # Ensure bucket exists with public access and no RLS
+        supabase.storage.from_(DOCUMENTS_BUCKET).upload(
+            file_path,
+            file_content,
+            file_options={"content-type": get_content_type(filename), "upsert": "true"},
+        )
+    except Exception:
+        # Fallback: remove then re-upload
         try:
-            bucket = supabase.storage.get_bucket(DOCUMENTS_BUCKET)
-        except:
-            # Create bucket if it doesn't exist with public access
-            try:
-                supabase.storage.create_bucket(
-                    DOCUMENTS_BUCKET,
-                    options={
-                        "public": True,
-                        "file_size_limit": 52428800,  # 50MB
-                        "allowed_mime_types": [
-                            "application/pdf",
-                            "text/plain",
-                            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                            "application/msword",
-                        ],
-                    },
-                )
-            except Exception as create_error:
-                # Bucket might already exist, continue
-                pass
+            supabase.storage.from_(DOCUMENTS_BUCKET).remove([file_path])
+        except Exception:
+            logger.debug("Could not remove existing file at %s", file_path)
 
-        # Upload file with upsert to overwrite if exists
-        try:
-            supabase.storage.from_(DOCUMENTS_BUCKET).upload(
-                file_path,
-                file_content,
-                file_options={"content-type": get_content_type(filename), "upsert": "true"},
-            )
-        except Exception as upload_error:
-            # If upload fails, try to remove existing file and upload again
-            try:
-                supabase.storage.from_(DOCUMENTS_BUCKET).remove([file_path])
-            except:
-                pass
+        supabase.storage.from_(DOCUMENTS_BUCKET).upload(
+            file_path,
+            file_content,
+            file_options={"content-type": get_content_type(filename)},
+        )
 
-            supabase.storage.from_(DOCUMENTS_BUCKET).upload(
-                file_path,
-                file_content,
-                file_options={"content-type": get_content_type(filename)},
-            )
+    return supabase.storage.from_(DOCUMENTS_BUCKET).get_public_url(file_path)
 
-        # Get public URL
-        file_url = supabase.storage.from_(DOCUMENTS_BUCKET).get_public_url(file_path)
 
-        return file_url
-
-    except Exception as e:
-        raise Exception(f"Failed to upload file to Supabase: {str(e)}")
+def get_supabase_storage_client():
+    """Return the shared Supabase client (for backward compat imports)."""
+    return get_db()

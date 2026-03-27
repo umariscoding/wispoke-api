@@ -38,6 +38,9 @@ class CompanyUsersResponse(BaseModel):
     total_chats: int
     total_messages: int
     company_id: str
+    page: int
+    page_size: int
+    total_pages: int
 
 
 class OverviewStats(BaseModel):
