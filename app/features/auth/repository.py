@@ -67,7 +67,7 @@ def get_company_by_api_key(api_key: str) -> Optional[Dict[str, Any]]:
 def get_published_company_info(slug: str) -> Optional[Dict[str, Any]]:
     res = (
         db.table("companies")
-        .select("company_id, name, slug, chatbot_title, chatbot_description, published_at")
+        .select("company_id, name, slug, chatbot_title, chatbot_description, published_at, settings")
         .eq("slug", slug)
         .eq("is_published", True)
         .execute()
@@ -81,6 +81,9 @@ def get_published_company_info(slug: str) -> Optional[Dict[str, Any]]:
         company["chatbot_title"] = company["slug"]
     if not company["chatbot_description"]:
         company["chatbot_description"] = ""
+    # Extract enable_user_portal from settings JSON, default True for backward compat
+    settings_col = company.pop("settings", None) or {}
+    company["enable_user_portal"] = settings_col.get("enable_user_portal", True)
     return company
 
 
@@ -141,6 +144,7 @@ def batch_update_settings(
     default_model: Optional[str] = None,
     system_prompt: Optional[str] = None,
     tone: Optional[str] = None,
+    enable_user_portal: Optional[bool] = None,
 ) -> Optional[Dict[str, Any]]:
     update_data: Dict[str, Any] = {}
 
@@ -170,6 +174,13 @@ def batch_update_settings(
         update_data["is_published"] = is_published
         if is_published:
             update_data["published_at"] = datetime.now(timezone.utc).isoformat()
+
+    # Store enable_user_portal in the settings JSON column
+    if enable_user_portal is not None:
+        company = get_company_by_id(company_id)
+        current_settings = (company.get("settings") or {}) if company else {}
+        current_settings["enable_user_portal"] = enable_user_portal
+        update_data["settings"] = current_settings
 
     if not update_data:
         return get_company_by_id(company_id)

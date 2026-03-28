@@ -141,6 +141,7 @@ def get_chatbot_status(company_id: str) -> Dict[str, Any]:
     company = get_company_by_id(company_id)
     if not company:
         raise NotFoundError("Company not found")
+    settings_col = company.get("settings") or {}
     return {
         "company_id": company["company_id"],
         "slug": company.get("slug"),
@@ -148,6 +149,7 @@ def get_chatbot_status(company_id: str) -> Dict[str, Any]:
         "published_at": company.get("published_at"),
         "chatbot_title": company.get("chatbot_title"),
         "chatbot_description": company.get("chatbot_description"),
+        "enable_user_portal": settings_col.get("enable_user_portal", True),
         "public_url": (
             get_chatbot_url(company["slug"])
             if company.get("slug") and company.get("is_published")
@@ -178,6 +180,7 @@ def batch_update_settings(company_id: str, **kwargs) -> Dict[str, Any]:
     is_published = kwargs.get("is_published")
     default_model = kwargs.get("default_model")
     tone = kwargs.get("tone")
+    enable_user_portal = kwargs.get("enable_user_portal")
 
     if all(v is None for v in kwargs.values()):
         raise ValidationError("At least one field must be provided")

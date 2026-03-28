@@ -11,6 +11,7 @@ class PublicCompanyInfo(BaseModel):
     chatbot_title: str
     chatbot_description: str
     published_at: Optional[str] = None
+    enable_user_portal: bool = True
 
 
 class PublicChatMessageRequest(BaseModel):

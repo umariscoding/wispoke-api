@@ -44,6 +44,7 @@ class BatchUpdateSettingsRequest(BaseModel):
     default_model: Optional[str] = None
     system_prompt: Optional[str] = Field(None, max_length=5000)
     tone: Optional[str] = None
+    enable_user_portal: Optional[bool] = None
 
 
 class EmbedSettingsRequest(BaseModel):

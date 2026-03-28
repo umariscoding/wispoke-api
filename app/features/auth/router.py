@@ -115,6 +115,7 @@ async def batch_update_settings(
         default_model=data.default_model,
         system_prompt=data.system_prompt,
         tone=data.tone,
+        enable_user_portal=data.enable_user_portal,
     )
 
 
