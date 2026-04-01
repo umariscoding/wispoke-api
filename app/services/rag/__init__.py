@@ -11,8 +11,6 @@ from .providers import (
     get_available_models,
     get_groq_api_key,
     get_openai_api_key,
-    get_anthropic_api_key,
-    get_cohere_api_key,
     get_pinecone_api_key,
     GROQ_MODEL_MAP,
 )

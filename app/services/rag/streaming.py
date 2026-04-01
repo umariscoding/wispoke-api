@@ -7,7 +7,7 @@ import logging
 from typing import AsyncGenerator
 
 from .chain import get_company_rag_chain
-from .providers import get_groq_api_key, get_openai_api_key, get_cohere_api_key, get_anthropic_api_key, get_pinecone_api_key, GROQ_MODELS
+from .providers import get_groq_api_key, get_openai_api_key, get_pinecone_api_key, GROQ_MODELS
 from app.features.auth.repository import get_company_by_id
 
 logger = logging.getLogger(__name__)
@@ -83,16 +83,8 @@ def _check_api_key(model: str) -> str | None:
         key = get_groq_api_key()
         if not key or key.startswith("your-"):
             return "Error: Groq API key not configured."
-    elif model == "OpenAI":
+    elif model in ("GPT-4o-mini", "GPT-4o", "GPT-4.1", "GPT-4.1-mini"):
         key = get_openai_api_key()
         if not key or key.startswith("your-"):
             return "Error: OpenAI API key not configured."
-    elif model == "Claude":
-        key = get_anthropic_api_key()
-        if not key or key.startswith("your-"):
-            return "Error: Anthropic API key not configured."
-    elif model == "Cohere":
-        key = get_cohere_api_key()
-        if not key or key.startswith("your-"):
-            return "Error: Cohere API key not configured."
     return None

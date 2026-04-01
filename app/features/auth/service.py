@@ -40,7 +40,7 @@ from app.features.users.repository import get_users_by_company_paginated
 
 VALID_MODELS = [
     "Llama-instant", "Llama-large", "GPT-OSS-120B",
-    "GPT-OSS-20B", "OpenAI", "Claude", "Cohere",
+    "GPT-OSS-20B", "GPT-4o-mini", "GPT-4o", "GPT-4.1", "GPT-4.1-mini",
 ]
 VALID_TONES = ["professional", "friendly", "casual", "formal", "witty"]
 

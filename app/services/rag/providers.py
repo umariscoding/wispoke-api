@@ -29,7 +29,7 @@ GROQ_MODELS = set(GROQ_MODEL_MAP.keys())
 
 ALL_MODELS: List[str] = [
     "Llama-instant", "Llama-large", "GPT-OSS-120B", "GPT-OSS-20B",
-    "OpenAI", "Claude", "Cohere",
+    "GPT-4o-mini", "GPT-4o", "GPT-4.1", "GPT-4.1-mini",
 ]
 
 
@@ -53,11 +53,6 @@ def get_groq_api_key() -> str:
 def get_openai_api_key() -> str:
     return settings.openai_api_key or ""
 
-def get_anthropic_api_key() -> str:
-    return settings.anthropic_api_key or ""
-
-def get_cohere_api_key() -> str:
-    return settings.cohere_api_key or ""
 
 def get_pinecone_api_key() -> str:
     return settings.pinecone_api_key or ""
@@ -87,20 +82,25 @@ def create_llm(llm_model: str = "Llama-instant"):
             model=GROQ_MODEL_MAP[llm_model], api_key=key, temperature=0.7
         )
 
-    if llm_model == "OpenAI":
+    if llm_model == "GPT-4o-mini":
         key = _require(settings.openai_api_key, "OpenAI")
         from langchain_openai import ChatOpenAI
         return ChatOpenAI(model="gpt-4o-mini", api_key=key, temperature=0.7)
 
-    if llm_model == "Claude":
-        key = _require(settings.anthropic_api_key, "Anthropic")
-        from langchain_anthropic import ChatAnthropic
-        return ChatAnthropic(model="claude-3-5-sonnet-20241022", api_key=key, temperature=0.7)
+    if llm_model == "GPT-4o":
+        key = _require(settings.openai_api_key, "OpenAI")
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(model="gpt-4o", api_key=key, temperature=0.7)
 
-    if llm_model == "Cohere":
-        key = _require(settings.cohere_api_key, "Cohere")
-        from langchain_cohere import ChatCohere
-        return ChatCohere(model="command-a-03-2025", cohere_api_key=key, temperature=0.7)
+    if llm_model == "GPT-4.1":
+        key = _require(settings.openai_api_key, "OpenAI")
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(model="gpt-4.1", api_key=key, temperature=0.7)
+
+    if llm_model == "GPT-4.1-mini":
+        key = _require(settings.openai_api_key, "OpenAI")
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(model="gpt-4.1-mini", api_key=key, temperature=0.7)
 
     raise ValueError(
         f"Model '{llm_model}' not available. Available: {', '.join(ALL_MODELS)}"
