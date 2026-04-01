@@ -69,7 +69,8 @@ async def upload_document(
     document["doc_id"] = doc_id
 
     success = await process_company_document(
-        company_id=company_id, document_content=text_content, doc_id=doc_id
+        company_id=company_id, document_content=text_content, doc_id=doc_id,
+        upload_source="file",
     )
     if not success:
         raise InternalError("Failed to process document")

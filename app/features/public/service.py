@@ -115,10 +115,33 @@ def get_chatbot_info_by_slug(company_slug: str) -> Dict[str, Any]:
     return _apply_plan_gating(company)
 
 
+_PRO_EMBED_DEFAULTS = {
+    "theme": "dark",
+    "position": "right",
+    "primaryColor": "#0d9488",
+    "headerColor": "",
+    "welcomeText": "Hi there! How can we help you today?",
+    "subtitleText": "We typically reply instantly",
+    "placeholderText": "Type your message...",
+    "showHeaderSubtitle": True,
+    "chatTemplate": "default",
+    "suggestedMessages": [],
+    "buttonIcon": "chat",
+    "hideBranding": False,
+}
+
+
 def get_embed_settings(company_slug: str) -> Dict[str, Any]:
     settings = get_embed_settings_by_slug(company_slug)
     if not settings:
         raise NotFoundError("Chatbot not found or not published")
+
+    # Plan gating: free users get default values for Pro-only embed fields
+    company = get_company_by_slug(company_slug)
+    if company and not is_plan_active(company):
+        for key, default in _PRO_EMBED_DEFAULTS.items():
+            settings[key] = default
+
     return {"settings": settings}
 
 

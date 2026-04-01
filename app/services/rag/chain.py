@@ -192,22 +192,32 @@ def get_company_rag_chain(
         _company_rag_chains[company_id] = {}
 
     company = get_company_by_id(company_id)
-    resolved_model = (company.get("default_model") or "Llama-large") if company else "Llama-large"
+
+    # Plan gating: free users get default model, tone, and no custom prompt
+    from app.features.billing.service import is_plan_active
+    plan_active = company and is_plan_active(company)
+
+    resolved_model = "Llama-large"
+    if company and plan_active:
+        resolved_model = company.get("default_model") or "Llama-large"
+
+    # Cache key includes plan status so chains are rebuilt on plan changes
+    cache_key = f"{resolved_model}:{'pro' if plan_active else 'free'}"
 
     # Cache hit?
-    if resolved_model in _company_rag_chains[company_id]:
-        chain, created_at = _company_rag_chains[company_id][resolved_model]
+    if cache_key in _company_rag_chains[company_id]:
+        chain, created_at = _company_rag_chains[company_id][cache_key]
         if not _is_expired(created_at):
             return chain
-        del _company_rag_chains[company_id][resolved_model]
+        del _company_rag_chains[company_id][cache_key]
 
     # Build
     company_context = {
         "company_name": company.get("name", "our company") if company else "our company",
         "company_email": company.get("email", "support@company.com") if company else "support@company.com",
         "company_description": "",
-        "custom_system_prompt": company.get("system_prompt", "") if company else "",
-        "tone": company.get("tone", "professional") if company else "professional",
+        "custom_system_prompt": company.get("system_prompt", "") if plan_active else "",
+        "tone": company.get("tone", "professional") if plan_active else "professional",
     }
     if company and company.get("chatbot_description"):
         company_context["company_description"] = f"- Description: {company['chatbot_description']}"
@@ -216,7 +226,9 @@ def get_company_rag_chain(
     index_name = get_shared_index_name()
     embedding_fn = create_embedding_function()
     pinecone_index = get_pinecone_client().Index(index_name)
-    retriever = create_company_retriever(pinecone_index, embedding_fn, namespace=company_id)
+    # Free users can only retrieve text-uploaded documents, not Pro file uploads
+    rag_filter = {"upload_source": {"$eq": "text"}} if not plan_active else None
+    retriever = create_company_retriever(pinecone_index, embedding_fn, namespace=company_id, metadata_filter=rag_filter)
     llm = create_llm(resolved_model)
 
     rag_chain = _build_chain(llm, retriever, company_context)
@@ -233,5 +245,5 @@ def get_company_rag_chain(
         input_messages_key="input", history_messages_key="chat_history",
     )
 
-    _company_rag_chains[company_id][resolved_model] = (conversational_chain, time.time())
+
     return conversational_chain

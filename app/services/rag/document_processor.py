@@ -14,11 +14,15 @@ logger = logging.getLogger(__name__)
 
 
 async def process_company_document(
-    company_id: str, document_content: str, doc_id: Optional[str] = None
+    company_id: str, document_content: str, doc_id: Optional[str] = None,
+    upload_source: str = "text",
 ) -> bool:
     """
     Process a document for a company's knowledge base.
     Kept async for compatibility with router-level await, but internal ops are sync.
+
+    upload_source: "text" (free-tier paste) or "file" (Pro-tier PDF/DOCX upload).
+    Used at retrieval time to filter out Pro-only documents for free users.
     """
     try:
         doc_chunks = split_text_for_txt(document_content)
@@ -30,6 +34,7 @@ async def process_company_document(
                 "chunk_id": i,
                 "company_id": company_id,
                 "document_id": doc_id or "unknown",
+                "upload_source": upload_source,
             }
             for i in range(len(doc_chunks))
         ]

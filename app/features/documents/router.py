@@ -49,7 +49,8 @@ async def upload_text_content(
         kb_id=kb["kb_id"], filename=data.filename, content=data.content, content_type="text/plain"
     )
     await process_company_document(
-        company_id=user.company_id, document_content=data.content, doc_id=document["doc_id"]
+        company_id=user.company_id, document_content=data.content, doc_id=document["doc_id"],
+        upload_source="text",
     )
     return {
         "message": "Text content uploaded and processed successfully",

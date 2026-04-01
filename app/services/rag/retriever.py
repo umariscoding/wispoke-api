@@ -23,6 +23,7 @@ class DirectPineconeRetriever(BaseRetriever):
     embedding_function: Any = Field(description="Embedding function")
     namespace: str = Field(description="Namespace for company isolation (company_id)")
     top_k: int = Field(default=8, description="Number of documents to retrieve")
+    metadata_filter: dict = Field(default_factory=dict, description="Optional Pinecone metadata filter")
 
     class Config:
         arbitrary_types_allowed = True
@@ -33,12 +34,16 @@ class DirectPineconeRetriever(BaseRetriever):
         try:
             query_embedding = self.embedding_function.embed_query(query)
 
-            results = self.pinecone_index.query(
-                vector=query_embedding,
-                top_k=self.top_k,
-                include_metadata=True,
-                namespace=self.namespace,
-            )
+            query_kwargs: dict = {
+                "vector": query_embedding,
+                "top_k": self.top_k,
+                "include_metadata": True,
+                "namespace": self.namespace,
+            }
+            if self.metadata_filter:
+                query_kwargs["filter"] = self.metadata_filter
+
+            results = self.pinecone_index.query(**query_kwargs)
 
             documents = []
             for match in results.matches:
@@ -66,10 +71,12 @@ def create_company_retriever(
     embedding_function: Any,
     namespace: str,
     top_k: int = 8,
+    metadata_filter: dict | None = None,
 ) -> DirectPineconeRetriever:
     return DirectPineconeRetriever(
         pinecone_index=pinecone_index,
         embedding_function=embedding_function,
         namespace=namespace,
         top_k=top_k,
+        metadata_filter=metadata_filter or {},
     )

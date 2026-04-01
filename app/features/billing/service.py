@@ -445,10 +445,19 @@ def cancel_subscription(company_id: str) -> Dict[str, Any]:
         )
         raise ValidationError("Failed to cancel subscription")
 
+    # LemonSqueezy returns the subscription with ends_at in the response
+    ends_at = None
+    try:
+        attrs = response.json().get("data", {}).get("attributes", {})
+        ends_at = attrs.get("ends_at")
+    except Exception:
+        pass
+
     # Update local status — plan stays "pro" until period ends
     update_subscription(
         company_id=company_id,
         ls_subscription_status="cancelled",
+        subscription_ends_at=ends_at,
     )
 
     return {"message": "Subscription will be cancelled at the end of the billing period"}
@@ -506,9 +515,21 @@ def resume_subscription(company_id: str) -> Dict[str, Any]:
         )
         raise ValidationError("Failed to resume subscription")
 
+    # Read updated dates from the LemonSqueezy response
+    renews_at = None
+    ends_at = None
+    try:
+        attrs = response.json().get("data", {}).get("attributes", {})
+        renews_at = attrs.get("renews_at")
+        ends_at = attrs.get("ends_at")
+    except Exception:
+        pass
+
     update_subscription(
         company_id=company_id,
         ls_subscription_status="active",
+        subscription_renews_at=renews_at,
+        subscription_ends_at=ends_at,
     )
 
     return {"message": "Subscription resumed successfully"}
