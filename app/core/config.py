@@ -25,7 +25,6 @@ class Settings(BaseSettings):
     # --- LLM provider keys (at least one should be set) ---
     groq_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
-    anthropic_api_key: Optional[str] = None
 
     # --- JWT ---
     jwt_algorithm: str = "HS256"
@@ -56,10 +55,6 @@ class Settings(BaseSettings):
     lemonsqueezy_store_id: Optional[str] = None
     lemonsqueezy_variant_id: Optional[str] = None
     admin_dashboard_url: str = "http://localhost:3000"
-
-    # --- Dev ---
-    debug: bool = False
-    log_level: str = "INFO"
 
     model_config = {
         "env_file": ".env",
