@@ -10,7 +10,6 @@ import time
 import logging
 from typing import List, Dict, Any, Tuple
 
-from langsmith import traceable
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda
 from langchain_core.output_parsers import StrOutputParser
@@ -112,7 +111,6 @@ _TONE_MAP = {
 }
 
 
-@traceable(name="build_conversational_rag_chain")
 def _build_chain(llm, retriever, company_context: Dict[str, str]):
     """Build the full contextualization -> retrieval -> QA pipeline."""
 
@@ -175,7 +173,6 @@ def _build_chain(llm, retriever, company_context: Dict[str, str]):
 # Public API — get (or build + cache) a company's chain
 # ---------------------------------------------------------------------------
 
-@traceable(name="get_company_rag_chain")
 def get_company_rag_chain(
     company_id: str, llm_model: str = "Llama-instant"
 ) -> RunnableWithMessageHistory:
