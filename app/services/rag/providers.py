@@ -7,7 +7,7 @@ functions, and validates that required API keys are present.
 
 from typing import Dict, List
 
-from langchain_cohere import CohereEmbeddings
+from langchain_cohere.embeddings import CohereEmbeddings
 from langchain_groq import ChatGroq
 
 from app.core.config import settings
