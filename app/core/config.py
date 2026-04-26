@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     groq_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
 
+    # --- Voice Agent (Deepgram STT/TTS) ---
+    deepgram_api_key: Optional[str] = None
+
     # --- JWT ---
     jwt_algorithm: str = "HS256"
     access_token_expire_minutes: int = 30

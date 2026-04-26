@@ -33,3 +33,7 @@ docx2txt==0.8
 # Templating
 jinja2==3.1.4
 
+# Voice Agent — Pipecat pipeline (Deepgram STT + Groq Llama + Deepgram TTS)
+# `webrtc` extra brings in aiortc for browser SmallWebRTC; `silero` for VAD.
+pipecat-ai[deepgram,groq,silero,webrtc]==1.0.0
+
