@@ -15,6 +15,7 @@ from fastapi.responses import Response
 from app.core.security import get_current_user_info
 from app.features.auth.dependencies import get_current_company, UserContext
 from app.features.voice_agent import service
+from app.features.voice_agent.call_log_repository import list_call_logs
 from app.features.voice_agent.pipeline import handle_browser_offer, run_twilio_call
 from app.features.voice_agent.repository import get_settings as get_va_settings
 from app.features.voice_agent.schemas import VoiceAgentSettingsRequest
@@ -41,6 +42,26 @@ async def update_settings(
 ):
     data = {k: v for k, v in body.model_dump().items() if v is not None}
     return service.update_settings(current_user.company_id, data)
+
+
+# ---------------------------------------------------------------------------
+# Call logs (transcripts + linked bookings)
+# ---------------------------------------------------------------------------
+
+@router.get("/call-logs")
+async def get_call_logs(
+    limit: int = 25,
+    offset: int = 0,
+    current_user: UserContext = Depends(get_current_company),
+):
+    page = list_call_logs(current_user.company_id, limit=limit, offset=offset)
+    return {
+        "call_logs": page["items"],
+        "total": page["total"],
+        "limit": limit,
+        "offset": offset,
+        "has_more": offset + len(page["items"]) < page["total"],
+    }
 
 
 # ---------------------------------------------------------------------------

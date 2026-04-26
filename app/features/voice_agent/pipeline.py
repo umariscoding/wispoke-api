@@ -8,15 +8,15 @@ paths share the same prompt (`agent_context.build_system_prompt`) and the same
 tool definition, so behavior is consistent across browser and phone.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import logging
-from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from fastapi import WebSocket
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import LLMRunFrame
+from pipecat.frames.frames import TTSSpeakFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -47,6 +47,10 @@ from app.core.config import settings as app_settings
 from app.features.voice_agent.agent_context import (
     FIELD_DEFS,
     build_system_prompt,
+)
+from app.features.voice_agent.call_log_repository import (
+    create_call_log,
+    finalize_call_log,
 )
 
 logger = logging.getLogger("wispoke.voice.pipecat")
@@ -224,6 +228,98 @@ def _build_task(
 # Twilio entry point
 # ---------------------------------------------------------------------------
 
+def _serialize_transcript(messages: List[Any]) -> List[Dict[str, Any]]:
+    """Reduce LLMContext messages to {role, content} pairs for the DB.
+
+    OpenAI/Groq message shapes vary (string content vs list-of-parts) so we
+    flatten to a string. Tool-call requests/results land as their own roles."""
+    out: List[Dict[str, Any]] = []
+    for m in messages:
+        # Each message is a dict-like with at least "role"; "content" may be
+        # str, list of parts, or absent (function-call requests).
+        role = (m.get("role") if isinstance(m, dict) else getattr(m, "role", None)) or "unknown"
+        if role == "system":
+            continue  # don't persist the giant system prompt with every call
+        content = m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
+        if isinstance(content, list):
+            text = " ".join(
+                part.get("text", "") for part in content if isinstance(part, dict) and part.get("type") == "text"
+            ).strip()
+        elif isinstance(content, str):
+            text = content
+        else:
+            text = ""
+        # Capture tool calls too, in a compact form
+        tool_calls = m.get("tool_calls") if isinstance(m, dict) else getattr(m, "tool_calls", None)
+        if tool_calls:
+            for tc in tool_calls:
+                fn = tc.get("function", {}) if isinstance(tc, dict) else getattr(tc, "function", {})
+                name = fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", "")
+                args = fn.get("arguments") if isinstance(fn, dict) else getattr(fn, "arguments", "")
+                out.append({"role": "tool_call", "content": f"{name}({args})"})
+        if text:
+            out.append({"role": role, "content": text})
+    return out
+
+
+async def _run_call(
+    transport: BaseTransport,
+    company_id: str,
+    va_settings: Dict[str, Any],
+    *,
+    source: str,
+    audio_in_sample_rate: int,
+    audio_out_sample_rate: int,
+    caller_ref: Optional[str] = None,
+) -> None:
+    """Shared run loop for browser + Twilio. Owns greeting, transcript save."""
+    started_at = datetime.now(timezone.utc)
+    call_log_id = create_call_log(company_id, source=source, caller_ref=caller_ref)
+    booked_appointment_id: Dict[str, Optional[str]] = {"id": None}
+
+    async def on_booked(appt: Dict[str, Any]) -> None:
+        booked_appointment_id["id"] = appt.get("appointment_id")
+
+    task, context = _build_task(
+        company_id,
+        va_settings,
+        transport,
+        audio_in_sample_rate=audio_in_sample_rate,
+        audio_out_sample_rate=audio_out_sample_rate,
+        on_booked=on_booked,
+    )
+
+    greeting = (va_settings.get("greeting_message") or "").strip() or (
+        "Hello! Thanks for calling. How can I help you today?"
+    )
+
+    @transport.event_handler("on_client_connected")
+    async def on_client_connected(_t, _c):
+        # Bypass the LLM for the opening line so the user-configured greeting
+        # is spoken VERBATIM. `append_to_context=True` records it as the
+        # assistant's first turn so the LLM doesn't greet again on the next
+        # turn.
+        await task.queue_frames([
+            TTSSpeakFrame(text=greeting, append_to_context=True),
+        ])
+
+    @transport.event_handler("on_client_disconnected")
+    async def on_client_disconnected(_t, _c):
+        try:
+            transcript = _serialize_transcript(list(context.messages))
+            finalize_call_log(
+                call_log_id,
+                transcript=transcript,
+                started_at=started_at,
+                appointment_id=booked_appointment_id["id"],
+            )
+        finally:
+            await task.cancel()
+
+    runner = PipelineRunner(handle_sigint=False, force_gc=True)
+    await runner.run(task)
+
+
 async def run_twilio_call(
     websocket: WebSocket,
     company_id: str,
@@ -249,30 +345,15 @@ async def run_twilio_call(
         ),
     )
 
-    task, context = _build_task(
+    await _run_call(
+        transport,
         company_id,
         va_settings,
-        transport,
+        source="twilio",
         audio_in_sample_rate=8000,
         audio_out_sample_rate=8000,
-        on_booked=None,
+        caller_ref=call_data.get("call_id"),
     )
-
-    @transport.event_handler("on_client_connected")
-    async def on_client_connected(_t, _c):
-        greeting = (
-            va_settings.get("greeting_message")
-            or "Hello! Thanks for calling. How can I help you today?"
-        )
-        context.add_message({"role": "user", "content": f"<system>Open the call with: {greeting}</system>"})
-        await task.queue_frames([LLMRunFrame()])
-
-    @transport.event_handler("on_client_disconnected")
-    async def on_client_disconnected(_t, _c):
-        await task.cancel()
-
-    runner = PipelineRunner(handle_sigint=False, force_gc=True)
-    await runner.run(task)
 
 
 # ---------------------------------------------------------------------------
@@ -304,34 +385,18 @@ async def handle_browser_offer(
             params=TransportParams(audio_in_enabled=True, audio_out_enabled=True),
         )
 
-        task, context = _build_task(
-            company_id,
-            va_settings,
-            transport,
-            audio_in_sample_rate=16000,
-            audio_out_sample_rate=24000,
-            on_booked=None,
-        )
-
-        @transport.event_handler("on_client_connected")
-        async def on_client_connected(_t, _c):
-            greeting = (
-                va_settings.get("greeting_message")
-                or "Hi! What can I help you book today?"
-            )
-            context.add_message(
-                {"role": "user", "content": f"<system>Open the call with: {greeting}</system>"}
-            )
-            await task.queue_frames([LLMRunFrame()])
-
-        @transport.event_handler("on_client_disconnected")
-        async def on_client_disconnected(_t, _c):
-            await task.cancel()
-
-        runner = PipelineRunner(handle_sigint=False, force_gc=True)
         # Run the pipeline in the background so the offer endpoint can return
         # its SDP answer immediately.
         import asyncio
-        asyncio.create_task(runner.run(task))
+        asyncio.create_task(
+            _run_call(
+                transport,
+                company_id,
+                va_settings,
+                source="browser",
+                audio_in_sample_rate=16000,
+                audio_out_sample_rate=24000,
+            )
+        )
 
     return await _webrtc_handler.handle_web_request(request, _on_connection)
