@@ -71,9 +71,14 @@ async def get_call_logs(
 # Browser test call — Pipecat SmallWebRTC SDP offer/answer
 # ---------------------------------------------------------------------------
 
-@router.post("/offer")
+@router.api_route("/offer", methods=["POST", "PATCH"])
 async def voice_agent_offer(payload: Dict[str, Any], token: str = ""):
     """Browser POSTs an SDP offer here; we return an SDP answer.
+
+    Pipecat's SmallWebRTC client uses POST for the initial offer and PATCH
+    for renegotiation / ICE restarts (e.g. when crossing NATs). Both go
+    through the same handler — the `pc_id` in the payload tells the
+    request handler whether it's a new session or an update.
 
     Auth: JWT in `?token=...` query param (the Pipecat client SDK can attach
     arbitrary query params to its connection URL).
