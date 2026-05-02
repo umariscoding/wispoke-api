@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     # --- Domain ---
     base_domain: str = "mysite.com"
     chatbot_protocol: str = "https"
-    use_subdomain_routing: bool = True
+    use_subdomain_routing: bool = False
 
     # --- LemonSqueezy ---
     lemonsqueezy_api_key: Optional[str] = None

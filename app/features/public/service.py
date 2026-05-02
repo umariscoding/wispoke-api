@@ -30,32 +30,6 @@ def _apply_plan_gating(company: Dict[str, Any]) -> Dict[str, Any]:
     return company
 
 
-def get_chatbot_info_by_subdomain(subdomain: str, is_subdomain_request: bool) -> Dict[str, Any]:
-    if not is_subdomain_request or not subdomain:
-        raise NotFoundError("Chatbot not found. Please check the URL.")
-    company = get_published_company_info(subdomain)
-    if not company:
-        raise NotFoundError("Chatbot not found or not published")
-    return _apply_plan_gating(company)
-
-
-def get_subdomain_company_info(subdomain: str, is_subdomain_request: bool) -> Dict[str, Any]:
-    if not is_subdomain_request or not subdomain:
-        raise NotFoundError("Company not found. Please check the URL.")
-    company = get_company_by_slug(subdomain)
-    if not company:
-        raise NotFoundError("Company not found")
-    return {
-        "company_id": company["company_id"],
-        "name": company["name"],
-        "slug": company["slug"],
-        "chatbot_title": company.get("chatbot_title"),
-        "chatbot_description": company.get("chatbot_description"),
-        "is_published": company.get("is_published", False),
-        "published_at": company.get("published_at"),
-    }
-
-
 def send_public_message(
     company: Dict[str, Any],
     message: str,

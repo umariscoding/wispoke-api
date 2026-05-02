@@ -14,7 +14,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 
 from app.core.exceptions import AppException, RateLimitError
-from app.core.middleware import SubdomainMiddleware, RequestLoggingMiddleware
+from app.core.middleware import RequestLoggingMiddleware
 from app.core.rate_limit import RateLimitMiddleware
 
 from app.features.auth.router import router as auth_router
@@ -78,7 +78,6 @@ app.add_middleware(
 )
 
 app.add_middleware(RateLimitMiddleware, max_requests=60, window_seconds=60)
-app.add_middleware(SubdomainMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 
 # ---------------------------------------------------------------------------
