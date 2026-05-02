@@ -132,6 +132,16 @@ def publish_chatbot(company_id: str, is_published: bool) -> bool:
     return len(res.data) > 0
 
 
+def update_theme_preference(company_id: str, theme_preference: str) -> bool:
+    res = (
+        db.table("companies")
+        .update({"theme_preference": theme_preference})
+        .eq("company_id", company_id)
+        .execute()
+    )
+    return len(res.data) > 0
+
+
 def update_chatbot_info(company_id: str, chatbot_title: str, chatbot_description: str) -> bool:
     res = (
         db.table("companies")

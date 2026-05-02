@@ -18,6 +18,7 @@ from app.features.auth.schemas import (
     ChatbotInfoRequest,
     BatchUpdateSettingsRequest,
     EmbedSettingsRequest,
+    ThemePreferenceRequest,
 )
 
 router = APIRouter(prefix="/auth", tags=["authentication"])
@@ -153,6 +154,14 @@ async def update_embed_settings(
         chatTemplate=data.chatTemplate,
         suggestedMessages=data.suggestedMessages,
     )
+
+
+@router.put("/company/theme-preference")
+async def update_theme_preference(
+    data: ThemePreferenceRequest,
+    current_company: UserContext = Depends(get_current_company),
+) -> Dict[str, Any]:
+    return service.update_theme_preference(current_company.company_id, data.theme_preference)
 
 
 @router.get("/health")

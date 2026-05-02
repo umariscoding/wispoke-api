@@ -51,6 +51,10 @@ class BatchUpdateSettingsRequest(BaseModel):
     enable_user_portal: Optional[bool] = None
 
 
+class ThemePreferenceRequest(BaseModel):
+    theme_preference: str = Field(..., pattern=r"^(light|dark|system)$")
+
+
 class EmbedSettingsRequest(BaseModel):
     theme: Optional[str] = "dark"
     position: Optional[str] = "right"

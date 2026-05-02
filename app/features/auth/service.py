@@ -30,6 +30,7 @@ from app.features.auth.repository import (
     get_company_by_id,
     get_company_by_email,
     update_company_slug as db_update_company_slug,
+    update_theme_preference as db_update_theme_preference,
     publish_chatbot as db_publish_chatbot,
     update_chatbot_info as db_update_chatbot_info,
     batch_update_settings as db_batch_update_settings,
@@ -133,6 +134,15 @@ def update_company_slug(company_id: str, slug: str) -> Dict[str, Any]:
         "slug": slug,
         "public_url": get_chatbot_url(slug),
     }
+
+
+def update_theme_preference(company_id: str, theme_preference: str) -> Dict[str, Any]:
+    if theme_preference not in ("light", "dark", "system"):
+        raise ValidationError("theme_preference must be 'light', 'dark', or 'system'")
+    success = db_update_theme_preference(company_id=company_id, theme_preference=theme_preference)
+    if not success:
+        raise InternalError("Failed to update theme preference")
+    return {"message": "Theme preference updated", "theme_preference": theme_preference}
 
 
 def publish_chatbot(company_id: str, is_published: bool) -> Dict[str, Any]:
