@@ -279,9 +279,18 @@ def _build_task(
         api_key=deepgram_key,
         live_options=LiveOptions(keyterm=_keyterms_for(va_settings)),
     )
+    # Hard cap completion length so the model can't role-play both sides of
+    # the conversation in one turn (gpt-oss observed doing this with no cap).
+    # `reasoning_effort=low` keeps gpt-oss responsive for voice — medium/high
+    # adds 1-2s of thinking time per turn.
     llm = GroqLLMService(
         api_key=groq_key,
         model=va_settings.get("llm_model") or "openai/gpt-oss-120b",
+        params=GroqLLMService.InputParams(
+            temperature=0.6,
+            max_completion_tokens=150,
+            extra={"reasoning_effort": "low"},
+        ),
     )
 
     voice = va_settings.get("voice_model") or "aura-2-andromeda-en"
