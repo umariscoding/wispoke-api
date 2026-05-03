@@ -58,6 +58,8 @@ from app.core.config import settings as app_settings
 from app.features.voice_agent.agent_context import (
     FIELD_DEFS,
     build_system_prompt,
+    spoken_date as _spoken_date,
+    spoken_time as _spoken_time,
 )
 from app.features.voice_agent.call_log_repository import (
     create_call_log,
@@ -210,12 +212,15 @@ def _make_book_handler(
 
         # Tell the LLM exactly what to say. The prompt's hard-rule #5 forces
         # verbatim repetition so the caller always hears a clear confirmation.
+        # Format date/time in spoken form so the model doesn't read out the
+        # ISO string ("twenty twenty-six dash oh five dash oh four").
         await params.result_callback(
             {
                 "success": True,
                 "message": (
                     f'Say exactly: "Booked — {args.get("caller_name")} on '
-                    f'{args["scheduled_date"]} at {args["start_time"]}. See you then!"'
+                    f'{_spoken_date(args["scheduled_date"])} at '
+                    f'{_spoken_time(args["start_time"])}. See you then!"'
                 ),
             }
         )

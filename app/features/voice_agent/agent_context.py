@@ -17,18 +17,44 @@ FIELD_DEFS: Dict[str, Dict[str, str]] = {
 }
 
 
-def _spoken_time(hhmm: str) -> str:
+_MONTHS = [
+    "January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December",
+]
+_ORDINAL_SUFFIX = {1: "st", 2: "nd", 3: "rd", 21: "st", 22: "nd", 23: "rd", 31: "st"}
+
+
+def spoken_time(hhmm: str) -> str:
     """Format '09:00' as '9 AM', '13:30' as '1:30 PM' — ready for TTS.
 
     The LLM will read these strings aloud, so we want natural English from
     the start. Saves the LLM from re-formatting and avoids "oh nine hundred
     hours" mishaps.
     """
-    h, m = map(int, hhmm.split(":"))
+    h, m = map(int, hhmm.split(":")[:2])
     period = "AM" if h < 12 else "PM"
     h12 = h if h <= 12 else h - 12
     h12 = 12 if h12 == 0 else h12
     return f"{h12} {period}" if m == 0 else f"{h12}:{m:02d} {period}"
+
+
+# Internal alias kept for the existing call site in this module.
+_spoken_time = spoken_time
+
+
+def spoken_date(yyyy_mm_dd: str) -> str:
+    """Format '2026-05-04' as 'Monday, May fourth' — natural for TTS.
+
+    The booking confirmation reads this back to the caller, so we want the
+    weekday + month + day. Keeps the day pronounceable (May fourth, not
+    May four).
+    """
+    try:
+        d = datetime.strptime(yyyy_mm_dd, "%Y-%m-%d")
+    except ValueError:
+        return yyyy_mm_dd
+    suffix = _ORDINAL_SUFFIX.get(d.day, "th")
+    return f"{d.strftime('%A')}, {_MONTHS[d.month - 1]} {d.day}{suffix}"
 
 
 def _availability_text(company_id: str, duration_min: int) -> str:
