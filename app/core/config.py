@@ -29,6 +29,12 @@ class Settings(BaseSettings):
     # --- Voice Agent (Deepgram STT/TTS) ---
     deepgram_api_key: Optional[str] = None
 
+    # --- Voice Agent (Gemini Live speech-to-speech) ---
+    # When set, browser test calls use Gemini's multimodal Live API instead of
+    # the Deepgram → Groq → Deepgram chain — lower latency, native turn-taking.
+    # Twilio calls continue to use Deepgram/Groq (Gemini Live needs 16/24kHz).
+    gemini_api_key: Optional[str] = None
+
     # --- Email (Resend) ---
     # When unset, send_email is a no-op so the app still runs in dev.
     resend_api_key: Optional[str] = None

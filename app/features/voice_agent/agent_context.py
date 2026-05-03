@@ -17,8 +17,28 @@ FIELD_DEFS: Dict[str, Dict[str, str]] = {
 }
 
 
+def _spoken_time(hhmm: str) -> str:
+    """Format '09:00' as '9 AM', '13:30' as '1:30 PM' — ready for TTS.
+
+    The LLM will read these strings aloud, so we want natural English from
+    the start. Saves the LLM from re-formatting and avoids "oh nine hundred
+    hours" mishaps.
+    """
+    h, m = map(int, hhmm.split(":"))
+    period = "AM" if h < 12 else "PM"
+    h12 = h if h <= 12 else h - 12
+    h12 = 12 if h12 == 0 else h12
+    return f"{h12} {period}" if m == 0 else f"{h12}:{m:02d} {period}"
+
+
 def _availability_text(company_id: str, duration_min: int) -> str:
-    """Summarize the next 7 days of availability for the system prompt.
+    """List concrete bookable slot times for the next 7 days.
+
+    Earlier this returned ranges like "09:00-19:00", but for non-trivial
+    appointment durations (e.g. 120 min) the slot grid only has a handful of
+    valid start times — the LLM would offer "2 PM" from a "1-7 PM" range, and
+    the backend's exact-match check would reject it. Listing the actual slot
+    starts in spoken form makes the LLM offer real slots and reads naturally.
 
     Uses one batched fetch (3 queries total) instead of 7×3 sequential queries.
     """
@@ -42,16 +62,12 @@ def _availability_text(company_id: str, duration_min: int) -> str:
         if not slots:
             lines.append(f"  {day_name} {date_str}: Closed")
             continue
-        ranges, rs, re_ = [], slots[0]["start_time"], slots[0]["end_time"]
-        for s in slots[1:]:
-            if s["start_time"] == re_:
-                re_ = s["end_time"]
-            else:
-                ranges.append(f"{rs}-{re_}")
-                rs, re_ = s["start_time"], s["end_time"]
-        ranges.append(f"{rs}-{re_}")
-        lines.append(f"  {day_name} {date_str}: {', '.join(ranges)}")
-    return "Schedule (next 7 days):\n" + "\n".join(lines)
+        times = [_spoken_time(s["start_time"][:5]) for s in slots]
+        lines.append(f"  {day_name} {date_str}: {', '.join(times)}")
+    return (
+        f"Schedule (next 7 days; each appointment is {duration_min} minutes — "
+        "these are the ONLY bookable start times):\n" + "\n".join(lines)
+    )
 
 
 def build_system_prompt(company_id: str, va_settings: Dict[str, Any]) -> str:
@@ -114,9 +130,10 @@ Required steps before booking:
 {collect_numbered}
 
 # Availability Handling
-- Ask "what date and time?" — wait for answer — then check the schedule below.
-- If the caller is vague ("morning", "next week"), pick the earliest open slot and offer it.
-- If the slot is closed/full, name the closest open one.
+- ONLY offer slot start times that appear in the schedule below. NEVER offer a time in between (e.g. if the listed slots are "9 AM, 11 AM, 1 PM", do NOT offer 10 AM or noon — those aren't real slots).
+- If the caller asks for a time that isn't a listed slot, say so and offer the nearest one ("2 PM isn't open, but I have 1 PM or 3 PM").
+- If the caller is vague ("morning", "next week"), pick the earliest listed slot that fits and offer it concretely.
+- If a day shows "Closed" or has no slots, say "we're closed [day]" and suggest the nearest open day.
 
 {avail}
 

@@ -1,11 +1,14 @@
 """
-Pipecat voice pipeline — single implementation for browser test (SmallWebRTC)
-and production phone calls (Twilio).
+Pipecat voice pipeline — two backends:
 
-Stack: Deepgram STT → Groq Llama-3.3 → Deepgram TTS, with Silero VAD for
-turn-taking and OpenAI-format function calling for `book_appointment`. Both
-paths share the same prompt (`agent_context.build_system_prompt`) and the same
-tool definition, so behavior is consistent across browser and phone.
+1. Gemini Live (browser only, when GEMINI_API_KEY is set) — speech-to-speech,
+   ~300ms latency, native turn-taking. No separate STT/TTS.
+2. Deepgram + Groq (default + Twilio fallback) — STT → LLM → TTS chain. Used
+   when Gemini key is unset, and always for Twilio (Gemini Live needs 16/24kHz
+   audio; Twilio is 8kHz).
+
+Both backends share the same system prompt and the same `book_appointment`
+tool, so behavior is consistent.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -13,11 +16,12 @@ import logging
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from fastapi import WebSocket
+from google.genai.types import ThinkingConfig
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import TTSSpeakFrame
+from pipecat.frames.frames import LLMRunFrame, TTSSpeakFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -30,6 +34,7 @@ from pipecat.runner.utils import parse_telephony_websocket
 from pipecat.serializers.twilio import TwilioFrameSerializer
 from pipecat.services.deepgram.stt import DeepgramSTTService, LiveOptions
 from pipecat.services.deepgram.tts import DeepgramTTSService
+from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService
 from pipecat.services.groq.llm import GroqLLMService
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.transports.base_transport import BaseTransport, TransportParams
@@ -286,6 +291,34 @@ _VOICE_REMAP = {
     "aura-helios-en": "aura-2-atlas-en",
 }
 
+# Gemini Live's catalog of TTS voices. The dashboard prefixes the stored value
+# with `gemini-` so we can route by provider; we strip the prefix here.
+_GEMINI_VOICES = {"aoede", "charon", "fenrir", "kore", "puck"}
+
+
+def _resolve_gemini_voice(voice_model: Optional[str]) -> str:
+    """Pick the Gemini voice id from the saved `voice_model` setting.
+
+    Falls back to Aoede if the user picked a Deepgram (aura-*) voice or left
+    it blank — that way browser test still works without forcing them to
+    re-pick on the Gemini panel."""
+    raw = (voice_model or "").strip().lower()
+    if raw.startswith("gemini-"):
+        name = raw.removeprefix("gemini-")
+        if name in _GEMINI_VOICES:
+            return name.capitalize()
+    return "Aoede"
+
+
+def _resolve_deepgram_voice(voice_model: Optional[str]) -> str:
+    """Pick the Deepgram Aura voice id from the saved `voice_model`.
+
+    Falls back to Andromeda if the user picked a Gemini voice."""
+    raw = (voice_model or "").strip()
+    if raw.startswith("aura-"):
+        return _VOICE_REMAP.get(raw, raw)
+    return "aura-2-andromeda-en"
+
 
 def _keyterms_for(va_settings: Dict[str, Any]) -> List[str]:
     """Words to boost in Deepgram Nova-3. Domain vocab dominates STT errors —
@@ -347,8 +380,7 @@ def _build_task(
         ),
     )
 
-    voice = va_settings.get("voice_model") or "aura-2-andromeda-en"
-    voice = _VOICE_REMAP.get(voice, voice)
+    voice = _resolve_deepgram_voice(va_settings.get("voice_model"))
     tts = DeepgramTTSService(api_key=deepgram_key, voice=voice)
 
     tools = ToolsSchema(standard_tools=[_book_appointment_schema(va_settings)])
@@ -393,6 +425,83 @@ def _build_task(
         ),
     )
 
+    return task, context
+
+
+# ---------------------------------------------------------------------------
+# Gemini Live (speech-to-speech) pipeline factory
+# ---------------------------------------------------------------------------
+
+def _build_gemini_task(
+    company_id: str,
+    va_settings: Dict[str, Any],
+    transport: BaseTransport,
+    *,
+    audio_in_sample_rate: int,
+    audio_out_sample_rate: int,
+    on_booked: Optional[Callable[[Dict[str, Any]], Awaitable[None]]],
+) -> Tuple[PipelineTask, LLMContext]:
+    """Single-service pipeline using Gemini Live's native speech-to-speech.
+
+    Replaces STT → LLM → TTS with one streaming connection. Smart Turn isn't
+    needed (Gemini does its own turn detection); Silero VAD still feeds the
+    user-side context aggregator.
+    """
+    gemini_key = app_settings.gemini_api_key
+    if not gemini_key:
+        raise RuntimeError("GEMINI_API_KEY is required for Gemini Live")
+
+    tools = ToolsSchema(standard_tools=[_book_appointment_schema(va_settings)])
+
+    system_prompt = build_system_prompt(company_id, va_settings)
+    greeting = (va_settings.get("greeting_message") or "").strip() or (
+        "Hello! Thanks for calling. How can I help you today?"
+    )
+    # Gemini Live speaks via the model itself (no TTS bypass), so we steer the
+    # opening line through the system prompt rather than queuing a TTS frame.
+    full_prompt = (
+        f"{system_prompt}\n\n# First Words\n"
+        f'Begin the call by saying exactly: "{greeting}"'
+    )
+
+    llm = GeminiLiveLLMService(
+        api_key=gemini_key,
+        settings=GeminiLiveLLMService.Settings(
+            model="gemini-2.5-flash-native-audio-preview-09-2025",
+            voice=_resolve_gemini_voice(va_settings.get("voice_model")),
+            system_instruction=full_prompt,
+            # thinking_budget=0 = no chain-of-thought, fastest TTFT for voice.
+            thinking=ThinkingConfig(thinking_budget=0),
+        ),
+    )
+    llm.register_function(
+        "book_appointment", _make_book_handler(company_id, va_settings, on_booked)
+    )
+
+    context = LLMContext(messages=[], tools=tools)
+    user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
+        context,
+        user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
+    )
+
+    pipeline = Pipeline(
+        [
+            transport.input(),
+            user_aggregator,
+            llm,
+            transport.output(),
+            assistant_aggregator,
+        ]
+    )
+
+    task = PipelineTask(
+        pipeline,
+        params=PipelineParams(
+            audio_in_sample_rate=audio_in_sample_rate,
+            audio_out_sample_rate=audio_out_sample_rate,
+            allow_interruptions=True,
+        ),
+    )
     return task, context
 
 
@@ -452,7 +561,11 @@ async def _run_call(
     async def on_booked(appt: Dict[str, Any]) -> None:
         booked_appointment_id["id"] = appt.get("appointment_id")
 
-    task, context = _build_task(
+    # Browser + Gemini key set → use speech-to-speech. Twilio (8kHz) and the
+    # no-Gemini-key case fall back to the Deepgram + Groq chain.
+    use_gemini = source == "browser" and bool(app_settings.gemini_api_key)
+    builder = _build_gemini_task if use_gemini else _build_task
+    task, context = builder(
         company_id,
         va_settings,
         transport,
@@ -467,13 +580,19 @@ async def _run_call(
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(_t, _c):
-        # Bypass the LLM for the opening line so the user-configured greeting
-        # is spoken VERBATIM. `append_to_context=True` records it as the
-        # assistant's first turn so the LLM doesn't greet again on the next
-        # turn.
-        await task.queue_frames([
-            TTSSpeakFrame(text=greeting, append_to_context=True),
-        ])
+        if use_gemini:
+            # Gemini Live speaks the greeting via the model itself (steered by
+            # the "First Words" section in the system prompt). LLMRunFrame
+            # triggers the initial inference once the WebRTC peer is ready.
+            await task.queue_frames([LLMRunFrame()])
+        else:
+            # Bypass the LLM for the opening line so the user-configured
+            # greeting is spoken VERBATIM via TTS. `append_to_context=True`
+            # records it as the assistant's first turn so the LLM doesn't
+            # greet again on the next turn.
+            await task.queue_frames([
+                TTSSpeakFrame(text=greeting, append_to_context=True),
+            ])
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(_t, _c):
