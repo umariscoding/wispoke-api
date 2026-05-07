@@ -13,6 +13,7 @@ tool, so behavior is consistent.
 
 from datetime import datetime, timedelta, timezone
 import logging
+import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from fastapi import WebSocket
@@ -21,7 +22,13 @@ from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.frames.frames import LLMRunFrame, TTSSpeakFrame
+from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
+    Frame,
+    LLMRunFrame,
+    TTSSpeakFrame,
+    UserStartedSpeakingFrame,
+)
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -30,6 +37,8 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
+from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.runner.utils import parse_telephony_websocket
 from pipecat.serializers.twilio import TwilioFrameSerializer
 from pipecat.services.deepgram.stt import DeepgramSTTService, LiveOptions
@@ -64,6 +73,10 @@ from app.features.voice_agent.agent_context import (
 from app.features.voice_agent.call_log_repository import (
     create_call_log,
     finalize_call_log,
+)
+from app.features.voice_agent.recording_storage import (
+    encode_pcm_to_wav,
+    upload_recording,
 )
 
 logger = logging.getLogger("wispoke.voice.pipecat")
@@ -286,6 +299,63 @@ def _send_booking_emails(
 
 
 # ---------------------------------------------------------------------------
+# Recording helpers — capture per-turn timestamps for transcript/audio sync
+# ---------------------------------------------------------------------------
+
+class _TurnTimestamper(FrameProcessor):
+    """Records (role, seconds-since-recording-start) on each turn boundary.
+
+    Lets the admin UI seek the audio player to the moment a clicked transcript
+    message was spoken. Uses `monotonic()` from the same instant the audio
+    buffer recorder is started, so the timestamps line up with the WAV.
+    """
+
+    def __init__(self, sink: List[Tuple[str, float]], t0_holder: Dict[str, Optional[float]], **kwargs):
+        super().__init__(**kwargs)
+        self._sink = sink
+        self._t0_holder = t0_holder
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        t0 = self._t0_holder.get("t")
+        if t0 is not None:
+            elapsed = max(0.0, time.monotonic() - t0)
+            if isinstance(frame, UserStartedSpeakingFrame):
+                self._sink.append(("user", elapsed))
+            elif isinstance(frame, BotStartedSpeakingFrame):
+                self._sink.append(("assistant", elapsed))
+        await self.push_frame(frame, direction)
+
+
+def _attach_timestamps(
+    transcript: List[Dict[str, Any]],
+    turn_events: List[Tuple[str, float]],
+) -> List[Dict[str, Any]]:
+    """Annotate transcript entries with `t` (seconds offset into recording).
+
+    Walks both lists in order, matching by role. Tool-call entries inherit the
+    timestamp of the assistant turn that produced them so a click still seeks
+    to a sensible spot."""
+    user_times = [t for r, t in turn_events if r == "user"]
+    asst_times = [t for r, t in turn_events if r == "assistant"]
+    ui = ai = 0
+    out: List[Dict[str, Any]] = []
+    for entry in transcript:
+        e = dict(entry)
+        role = e.get("role")
+        if role == "user" and ui < len(user_times):
+            e["t"] = round(user_times[ui], 2)
+            ui += 1
+        elif role == "assistant" and ai < len(asst_times):
+            e["t"] = round(asst_times[ai], 2)
+            ai += 1
+        elif role == "tool_call" and ai > 0:
+            e["t"] = round(asst_times[ai - 1], 2)
+        out.append(e)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Pipeline factory (transport-agnostic)
 # ---------------------------------------------------------------------------
 
@@ -359,6 +429,7 @@ def _build_task(
     audio_in_sample_rate: int,
     audio_out_sample_rate: int,
     on_booked: Optional[Callable[[Dict[str, Any]], Awaitable[None]]],
+    extra_processors: Optional[List[FrameProcessor]] = None,
 ) -> Tuple[PipelineTask, LLMContext]:
     """Wire STT → LLM → TTS around the given transport."""
     deepgram_key = app_settings.deepgram_api_key
@@ -417,6 +488,7 @@ def _build_task(
             llm,
             tts,
             transport.output(),
+            *(extra_processors or []),
             assistant_aggregator,
         ]
     )
@@ -445,6 +517,7 @@ def _build_gemini_task(
     audio_in_sample_rate: int,
     audio_out_sample_rate: int,
     on_booked: Optional[Callable[[Dict[str, Any]], Awaitable[None]]],
+    extra_processors: Optional[List[FrameProcessor]] = None,
 ) -> Tuple[PipelineTask, LLMContext]:
     """Single-service pipeline using Gemini Live's native speech-to-speech.
 
@@ -495,6 +568,7 @@ def _build_gemini_task(
             user_aggregator,
             llm,
             transport.output(),
+            *(extra_processors or []),
             assistant_aggregator,
         ]
     )
@@ -566,6 +640,43 @@ async def _run_call(
     async def on_booked(appt: Dict[str, Any]) -> None:
         booked_appointment_id["id"] = appt.get("appointment_id")
 
+    # Recording: a single mono buffer (user + bot mixed) at the input rate.
+    # Twilio is 8kHz, browser is 16/24kHz — we record at the input rate to
+    # avoid resampling cost mid-call. WAV file size at 16kHz mono is ~1MB/min.
+    recording_rate = audio_in_sample_rate
+    audio_buffer = AudioBufferProcessor(sample_rate=recording_rate, num_channels=1)
+    turn_events: List[Tuple[str, float]] = []
+    t0_holder: Dict[str, Optional[float]] = {"t": None}
+    timestamper = _TurnTimestamper(turn_events, t0_holder)
+
+    pcm_chunks: List[bytes] = []
+    track_pcm: Dict[str, bytearray] = {"user": bytearray(), "bot": bytearray()}
+
+    @audio_buffer.event_handler("on_audio_data")
+    async def _on_audio(_proc, audio: bytes, _sample_rate: int, _num_channels: int):
+        # Fires once on stop_recording with the full merged buffer (and would
+        # also fire periodically if buffer_size>0, which we don't set).
+        logger.info(
+            "voice_agent recording: on_audio_data fired (merged %d bytes)",
+            len(audio or b""),
+        )
+        if audio:
+            pcm_chunks.append(audio)
+
+    @audio_buffer.event_handler("on_track_audio_data")
+    async def _on_tracks(_proc, user_audio: bytes, bot_audio: bytes, _sample_rate: int, _num_channels: int):
+        # Defensive fallback: if the merge path returns empty (one side never
+        # had audio for some reason), the per-track tracks may still hold data.
+        logger.info(
+            "voice_agent recording: on_track_audio_data fired (user %d, bot %d)",
+            len(user_audio or b""),
+            len(bot_audio or b""),
+        )
+        if user_audio:
+            track_pcm["user"].extend(user_audio)
+        if bot_audio:
+            track_pcm["bot"].extend(bot_audio)
+
     # Browser + Gemini key set → use speech-to-speech. Twilio (8kHz) and the
     # no-Gemini-key case fall back to the Deepgram + Groq chain.
     use_gemini = source == "browser" and bool(app_settings.gemini_api_key)
@@ -577,6 +688,7 @@ async def _run_call(
         audio_in_sample_rate=audio_in_sample_rate,
         audio_out_sample_rate=audio_out_sample_rate,
         on_booked=on_booked,
+        extra_processors=[audio_buffer, timestamper],
     )
 
     greeting = (va_settings.get("greeting_message") or "").strip() or (
@@ -585,6 +697,10 @@ async def _run_call(
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(_t, _c):
+        # Start recording at the same wall-clock instant we anchor turn
+        # timestamps, so seek offsets line up with the WAV.
+        t0_holder["t"] = time.monotonic()
+        await audio_buffer.start_recording()
         if use_gemini:
             # Gemini Live speaks the greeting via the model itself (steered by
             # the "First Words" section in the system prompt). LLMRunFrame
@@ -602,12 +718,58 @@ async def _run_call(
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(_t, _c):
         try:
-            transcript = _serialize_transcript(list(context.messages))
+            # Stop recording first so the on_audio_data handler fires and
+            # populates pcm_chunks before we encode/upload.
+            try:
+                await audio_buffer.stop_recording()
+            except Exception:
+                logger.exception("audio_buffer.stop_recording failed")
+
+            recording_url: Optional[str] = None
+            recording_format: Optional[str] = None
+            pcm = b"".join(pcm_chunks)
+            # Fallback: if the merged path produced nothing (e.g. the buffer
+            # processor cleared its primary buffers before stop fired), fall
+            # back to the longer of the per-track buffers so we don't lose
+            # the recording entirely.
+            if not pcm:
+                user_bytes = bytes(track_pcm["user"])
+                bot_bytes = bytes(track_pcm["bot"])
+                pcm = user_bytes if len(user_bytes) >= len(bot_bytes) else bot_bytes
+                if pcm:
+                    logger.warning(
+                        "voice_agent recording: merged buffer empty, falling "
+                        "back to per-track audio (%d bytes)",
+                        len(pcm),
+                    )
+            logger.info(
+                "voice_agent recording: collected %d PCM bytes for call %s",
+                len(pcm),
+                call_log_id,
+            )
+            if pcm:
+                try:
+                    wav = encode_pcm_to_wav(pcm, sample_rate=recording_rate, num_channels=1)
+                    recording_url = upload_recording(company_id, call_log_id, wav)
+                    if recording_url:
+                        recording_format = "wav"
+                        logger.info("voice_agent recording uploaded: %s", recording_url)
+                    else:
+                        logger.warning("voice_agent recording upload returned None")
+                except Exception:
+                    logger.exception("Failed to encode/upload call recording")
+
+            transcript = _attach_timestamps(
+                _serialize_transcript(list(context.messages)),
+                turn_events,
+            )
             finalize_call_log(
                 call_log_id,
                 transcript=transcript,
                 started_at=started_at,
                 appointment_id=booked_appointment_id["id"],
+                recording_url=recording_url,
+                recording_format=recording_format,
             )
         finally:
             await task.cancel()

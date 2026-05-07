@@ -68,6 +68,8 @@ def finalize_call_log(
     transcript: List[Dict[str, Any]],
     started_at: datetime,
     appointment_id: Optional[str] = None,
+    recording_url: Optional[str] = None,
+    recording_format: Optional[str] = None,
 ) -> None:
     """Close out a call log with the final transcript + linked booking."""
     try:
@@ -80,6 +82,10 @@ def finalize_call_log(
         }
         if appointment_id:
             update["appointment_id"] = appointment_id
+        if recording_url:
+            update["recording_url"] = recording_url
+        if recording_format:
+            update["recording_format"] = recording_format
         db.table("voice_call_logs").update(update).eq("call_log_id", call_log_id).execute()
     except Exception:
         logger.exception("voice_call_logs finalize failed")
