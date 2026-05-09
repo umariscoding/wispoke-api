@@ -9,6 +9,7 @@ import logging
 from typing import Any, Dict
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import Response
 
 from app.core.security import get_current_user_info
 from app.features.auth.dependencies import get_current_company, UserContext
@@ -138,5 +139,44 @@ async def voice_agent_offer_patch(payload: Dict[str, Any], token: str = ""):
 
     await handle_browser_patch(patch)
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Voice samples (for the dashboard's voice picker preview button)
+# ---------------------------------------------------------------------------
+
+@router.get("/voice-sample/{voice_id}")
+async def voice_sample(voice_id: str):
+    """Stream preview audio for a Gemini voice.
+
+    Streams the WAV bytes directly (no redirect) so the browser's `<audio>`
+    element doesn't have to deal with cross-origin redirect quirks. Bytes
+    are cached in Supabase Storage so generation only happens once per voice.
+    """
+    from app.features.voice_agent.voice_samples import (
+        GEMINI_VOICE_NAMES,
+        get_or_create_sample_bytes,
+    )
+
+    # Accept "gemini-aoede" or just "Aoede" — normalize to the catalog name.
+    raw = voice_id.strip()
+    if raw.lower().startswith("gemini-"):
+        raw = raw[len("gemini-"):]
+    voice_name = raw.capitalize()
+    if voice_name not in GEMINI_VOICE_NAMES:
+        raise HTTPException(status_code=404, detail=f"Unknown voice: {voice_id}")
+
+    wav = get_or_create_sample_bytes(voice_name)
+    if not wav:
+        raise HTTPException(status_code=503, detail="Sample generation failed; check server logs")
+    return Response(
+        content=wav,
+        media_type="audio/wav",
+        headers={
+            # Cache aggressively at the edge — samples never change for a given voice.
+            "Cache-Control": "public, max-age=86400",
+            "Content-Length": str(len(wav)),
+        },
+    )
 
 
