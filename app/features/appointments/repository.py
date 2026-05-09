@@ -32,6 +32,27 @@ def get_appointment_by_id(appointment_id: str, company_id: str) -> Optional[Dict
     return res.data[0] if res.data else None
 
 
+def get_upcoming_by_phone(company_id: str, phone: str) -> List[Dict[str, Any]]:
+    """Find non-cancelled appointments for a phone number, today onwards.
+
+    Used by the voice agent to spot reschedule/cancel intents — and to greet
+    a returning caller with context ("I see you have a 3 PM Wednesday").
+    """
+    today = datetime.now(timezone.utc).date().isoformat()
+    res = (
+        db.table("appointments")
+        .select("*")
+        .eq("company_id", company_id)
+        .eq("caller_phone", phone)
+        .neq("status", "cancelled")
+        .gte("scheduled_date", today)
+        .order("scheduled_date")
+        .order("start_time")
+        .execute()
+    )
+    return res.data or []
+
+
 def get_appointments_for_date(company_id: str, date: str) -> List[Dict[str, Any]]:
     res = (
         db.table("appointments")
