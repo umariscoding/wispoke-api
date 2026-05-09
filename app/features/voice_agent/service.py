@@ -2,9 +2,20 @@
 Voice Agent — business logic.
 """
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from app.features.voice_agent import repository as repo
+
+
+# Legacy DB columns we no longer surface to the FE — the table still has them
+# (migration 004) but the code path doesn't use them anymore. Stripped from
+# both reads and writes so they don't leak into the dashboard or trip the
+# `voice_provider_check` constraint when echoed back.
+_LEGACY_FIELDS = {"voice_provider"}
+
+
+def _strip_legacy(d: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: v for k, v in d.items() if k not in _LEGACY_FIELDS}
 
 
 def get_settings(company_id: str) -> Dict[str, Any]:
@@ -12,27 +23,19 @@ def get_settings(company_id: str) -> Dict[str, Any]:
     if not settings:
         return {
             "is_enabled": False,
-            "twilio_phone_number": None,
             "greeting_message": "Hello! Thank you for calling. How can I help you today?",
             "business_name": None,
             "business_type": None,
+            "business_phone": None,
             "appointment_duration_min": 30,
-            "voice_provider": "deepgram",
-            "voice_model": "aura-asteria-en",
+            "voice_model": "gemini-aoede",
+            "llm_model": "gemini-2.5-flash-native-audio-preview-12-2025",
             "language": "en",
             "system_prompt": None,
             "appointment_fields": ["name", "phone"],
         }
-    settings.pop("twilio_auth_token", None)  # Never expose Twilio auth token
-    return settings
+    return _strip_legacy(settings)
 
 
 def update_settings(company_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
-    result = repo.upsert_settings(company_id, **data)
-    result.pop("twilio_auth_token", None)
-    return result
-
-
-def get_settings_for_call(phone_number: str) -> Optional[Dict[str, Any]]:
-    """Look up voice agent settings by the Twilio phone number being called."""
-    return repo.get_settings_by_phone(phone_number)
+    return _strip_legacy(repo.upsert_settings(company_id, **_strip_legacy(data)))

@@ -1,16 +1,14 @@
 """
-Voice Agent — HTTP and WebSocket endpoints.
+Voice Agent — HTTP endpoints.
 
-Both browser and Twilio paths run through the same Pipecat pipeline
-(`pipeline.py`). The browser uses SmallWebRTC (WebRTC peer connection,
-SDP offer/answer); Twilio uses its WebSocket media stream.
+Browser-only. Pipeline runs Gemini Live over SmallWebRTC (SDP offer/answer
++ trickle ICE). Phone-call (Twilio) support was removed.
 """
 
 import logging
 from typing import Any, Dict
 
-from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.core.security import get_current_user_info
 from app.features.auth.dependencies import get_current_company, UserContext
@@ -142,82 +140,3 @@ async def voice_agent_offer_patch(payload: Dict[str, Any], token: str = ""):
     return {"ok": True}
 
 
-# ---------------------------------------------------------------------------
-# Twilio incoming call (public)
-# ---------------------------------------------------------------------------
-
-@router.post("/twilio/incoming")
-async def twilio_incoming_call(request: Request):
-    """Twilio hits this URL on incoming calls; we return TwiML that points
-    Twilio's <Stream> at our WebSocket media endpoint."""
-    form = await request.form()
-    called_number = form.get("Called", "")
-    call_sid = form.get("CallSid", "")
-    logger.info(f"Incoming call to {called_number}, CallSid: {call_sid}")
-
-    settings = service.get_settings_for_call(called_number)
-    if not settings:
-        twiml = (
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-            "<Response>\n"
-            "    <Say>Sorry, this number is not configured for automated scheduling. Goodbye.</Say>\n"
-            "    <Hangup/>\n"
-            "</Response>"
-        )
-        return Response(content=twiml, media_type="application/xml")
-
-    company = get_company_by_id(settings["company_id"])
-    if not company or not is_plan_active(company):
-        logger.warning("Twilio call rejected — no active Pro plan for company %s", settings["company_id"])
-        twiml = (
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-            "<Response>\n"
-            "    <Say>This number's subscription is not active. Goodbye.</Say>\n"
-            "    <Hangup/>\n"
-            "</Response>"
-        )
-        return Response(content=twiml, media_type="application/xml")
-
-    base_url = str(request.base_url).rstrip("/")
-    ws_url = base_url.replace("https://", "wss://").replace("http://", "ws://")
-    ws_url = f"{ws_url}/voice-agent/media-stream/{settings['company_id']}"
-
-    twiml = (
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
-        "<Response>\n"
-        "    <Connect>\n"
-        f"        <Stream url=\"{ws_url}\">\n"
-        f"            <Parameter name=\"company_id\" value=\"{settings['company_id']}\" />\n"
-        "        </Stream>\n"
-        "    </Connect>\n"
-        "</Response>"
-    )
-    return Response(content=twiml, media_type="application/xml")
-
-
-@router.websocket("/media-stream/{company_id}")
-async def media_stream(websocket: WebSocket, company_id: str):
-    """Twilio connects here to stream call audio."""
-    await websocket.accept()
-    logger.info(f"Media stream connected for company: {company_id}")
-
-    va_settings = get_va_settings(company_id)
-    if not va_settings or not va_settings.get("is_enabled"):
-        logger.warning(f"Voice agent not enabled for company: {company_id}")
-        await websocket.close()
-        return
-
-    company = get_company_by_id(company_id)
-    if not company or not is_plan_active(company):
-        logger.warning(f"Voice agent denied — no active Pro plan for company: {company_id}")
-        await websocket.close()
-        return
-
-    from app.features.voice_agent.pipeline import run_twilio_call
-
-    try:
-        await run_twilio_call(websocket, company_id, va_settings)
-    except WebSocketDisconnect:
-        logger.info(f"Media stream disconnected for company: {company_id}")
-    except Exception:
-        logger.exception("Media stream error")

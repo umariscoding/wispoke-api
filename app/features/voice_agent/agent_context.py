@@ -1,6 +1,6 @@
 """
-Shared agent context used by both browser and Twilio Pipecat pipelines:
-the system prompt + the catalog of collectable caller fields.
+Agent context for the Gemini Live voice pipeline: the system prompt and
+the catalog of collectable caller fields.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -115,7 +115,23 @@ def build_system_prompt(company_id: str, va_settings: Dict[str, Any]) -> str:
     field_labels = " AND ".join(FIELD_DEFS[f]["label"] for f in fields if f in FIELD_DEFS)
     avail = _availability_text(company_id, duration)
 
-    return f"""# Role
+    # Anchor "today" at the top of the prompt. Without this, the model has
+    # to infer relative dates ("tomorrow", "next Tuesday") from the bullet
+    # list lower down — which is the #1 source of wrong-day bookings.
+    now = datetime.now(timezone.utc)
+    today_line = (
+        f"Today is {now.strftime('%A')}, "
+        f"{_MONTHS[now.month - 1]} {now.day}, {now.year} "
+        f"({now.strftime('%Y-%m-%d')})."
+    )
+
+    return f"""# Today
+{today_line}
+When the caller says "tomorrow", "next Tuesday", or any relative date,
+resolve it against the date above and read the absolute date back to the
+caller before booking ("So that's Wednesday, May twelfth — right?").
+
+# Role
 You are the phone receptionist at {biz_name}, a {biz_type}. You sound like a real person — not a script, not a bot.
 
 # Hard Rules (do not break these)

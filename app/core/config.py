@@ -22,17 +22,11 @@ class Settings(BaseSettings):
     # --- Google OAuth ---
     google_client_id: Optional[str] = None
 
-    # --- LLM provider keys (at least one should be set) ---
+    # --- LLM provider keys (used by RAG/chat — not the voice agent) ---
     groq_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
 
-    # --- Voice Agent (Deepgram STT/TTS) ---
-    deepgram_api_key: Optional[str] = None
-
-    # --- Voice Agent (Gemini Live speech-to-speech) ---
-    # When set, browser test calls use Gemini's multimodal Live API instead of
-    # the Deepgram → Groq → Deepgram chain — lower latency, native turn-taking.
-    # Twilio calls continue to use Deepgram/Groq (Gemini Live needs 16/24kHz).
+    # --- Voice Agent (Gemini Live speech-to-speech, browser only) ---
     gemini_api_key: Optional[str] = None
 
     # --- Email (Resend) ---

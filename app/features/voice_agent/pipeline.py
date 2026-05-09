@@ -1,14 +1,10 @@
 """
-Pipecat voice pipeline — two backends:
+Voice pipeline — Gemini Live (speech-to-speech) over browser WebRTC.
 
-1. Gemini Live (browser only, when GEMINI_API_KEY is set) — speech-to-speech,
-   ~300ms latency, native turn-taking. No separate STT/TTS.
-2. Deepgram + Groq (default + Twilio fallback) — STT → LLM → TTS chain. Used
-   when Gemini key is unset, and always for Twilio (Gemini Live needs 16/24kHz
-   audio; Twilio is 8kHz).
-
-Both backends share the same system prompt and the same `book_appointment`
-tool, so behavior is consistent.
+Single backend: Gemini Live native audio. ~300ms latency, native turn-taking,
+no separate STT/TTS. Browser-only (16/24kHz audio). Twilio support was
+removed — phone calls would need a separate cascaded pipeline (Gemini Live
+needs 16kHz+, Twilio is 8kHz mu-law).
 """
 
 from datetime import datetime, timedelta, timezone
@@ -16,17 +12,17 @@ import logging
 import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
-from fastapi import WebSocket
 from google.genai.types import ThinkingConfig
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
-from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.utils import create_stream_resampler, mix_audio
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     Frame,
+    InputAudioRawFrame,
     LLMRunFrame,
-    TTSSpeakFrame,
+    OutputAudioRawFrame,
     UserStartedSpeakingFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
@@ -37,14 +33,8 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
-from pipecat.processors.audio.audio_buffer_processor import AudioBufferProcessor
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
-from pipecat.runner.utils import parse_telephony_websocket
-from pipecat.serializers.twilio import TwilioFrameSerializer
-from pipecat.services.deepgram.stt import DeepgramSTTService, LiveOptions
-from pipecat.services.deepgram.tts import DeepgramTTSService
 from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService
-from pipecat.services.groq.llm import GroqLLMService
 from pipecat.services.llm_service import FunctionCallParams
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 from pipecat.transports.smallwebrtc.connection import IceServer, SmallWebRTCConnection
@@ -53,15 +43,6 @@ from pipecat.transports.smallwebrtc.request_handler import (
     SmallWebRTCRequestHandler,
 )
 from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
-from pipecat.transports.websocket.fastapi import (
-    FastAPIWebsocketParams,
-    FastAPIWebsocketTransport,
-)
-from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
-from pipecat.turns.user_turn_strategies import (
-    UserTurnStrategies,
-    default_user_turn_start_strategies,
-)
 
 from app.core.config import settings as app_settings
 from app.features.voice_agent.agent_context import (
@@ -124,11 +105,9 @@ _EMAIL_PHONETICS = {
 
 
 def _sanitize_email(raw: Optional[str]) -> Optional[str]:
-    """Clean up Deepgram artifacts in dictated emails.
-
-    Deepgram transcribes "umar at gmail dot com" verbatim instead of normalizing
-    to a real address. Also emits "zed"/"zee" for the letter Z. Apply the same
-    fixes a human would when typing what they heard."""
+    """Native-audio models still sometimes echo dictated emails verbatim
+    ("umar at gmail dot com"). Same fix a human would apply when typing
+    what they heard."""
     if not raw:
         return raw
     s = " " + raw.lower().strip() + " "
@@ -147,6 +126,23 @@ def _sanitize_phone(raw: Optional[str]) -> Optional[str]:
     return keep or None
 
 
+def _validate_booking_date(scheduled_date: str) -> Optional[str]:
+    """Return an error string if the date is bogus, else None.
+
+    Catches the most common hallucination — booking dates in the past or
+    way in the future — before the appointment hits the DB."""
+    try:
+        d = datetime.strptime(scheduled_date, "%Y-%m-%d").date()
+    except ValueError:
+        return "scheduled_date must be YYYY-MM-DD"
+    today = datetime.now(timezone.utc).date()
+    if d < today:
+        return f"date {scheduled_date} is in the past (today is {today.isoformat()})"
+    if (d - today).days > 60:
+        return f"date {scheduled_date} is more than 60 days out — please pick a closer date"
+    return None
+
+
 def _make_book_handler(
     company_id: str,
     va_settings: Dict[str, Any],
@@ -155,7 +151,6 @@ def _make_book_handler(
     async def handler(params: FunctionCallParams) -> None:
         args = dict(params.arguments)
 
-        # Clean up STT artifacts before validation/persistence.
         if "caller_email" in args:
             args["caller_email"] = _sanitize_email(args.get("caller_email"))
         if "caller_phone" in args:
@@ -164,6 +159,21 @@ def _make_book_handler(
         if not args.get("scheduled_date") or not args.get("start_time") or not args.get("caller_name"):
             await params.result_callback(
                 {"success": False, "message": "Missing caller_name, scheduled_date, or start_time"}
+            )
+            return
+
+        date_err = _validate_booking_date(args["scheduled_date"])
+        if date_err:
+            logger.warning(f"book_appointment date rejected for {company_id}: {date_err}")
+            await params.result_callback(
+                {
+                    "success": False,
+                    "reason": date_err,
+                    "message": (
+                        f"Booking failed: {date_err}. Apologize, restate today's date, "
+                        "and ask the caller to confirm which day they actually want."
+                    ),
+                }
             )
             return
 
@@ -192,10 +202,6 @@ def _make_book_handler(
         try:
             result = create_appointment(company_id, payload)
         except Exception as e:
-            # Surface the real reason to the LLM so it can give the caller
-            # honest feedback instead of inventing one ("slot isn't available"
-            # was being hallucinated when the actual failure was something
-            # else — date format, validation, etc).
             reason = str(e) or "unknown error"
             logger.warning(f"book_appointment rejected for {company_id}: {reason}")
             await params.result_callback(
@@ -210,8 +216,6 @@ def _make_book_handler(
             )
             return
 
-        # Best-effort booking notifications. Failures are logged but don't
-        # affect the call — the LLM still hears "success".
         try:
             _send_booking_emails(company_id, va_settings, args, result)
         except Exception:
@@ -223,10 +227,6 @@ def _make_book_handler(
             except Exception:
                 logger.exception("on_booked callback failed")
 
-        # Tell the LLM exactly what to say. The prompt's hard-rule #5 forces
-        # verbatim repetition so the caller always hears a clear confirmation.
-        # Format date/time in spoken form so the model doesn't read out the
-        # ISO string ("twenty twenty-six dash oh five dash oh four").
         await params.result_callback(
             {
                 "success": True,
@@ -256,14 +256,13 @@ def _send_booking_emails(
     from app.features.auth.repository import get_company_by_id
 
     biz_name = va_settings.get("business_name") or "us"
-    biz_phone = va_settings.get("twilio_phone_number")
+    biz_phone = va_settings.get("business_phone")
     caller_name = args.get("caller_name") or "there"
     caller_email = args.get("caller_email")
     caller_phone = args.get("caller_phone")
     service = args.get("service_type")
     notes = args.get("notes") or args.get("caller_address")
 
-    # 1. Caller confirmation
     if caller_email:
         subject, html, text = render_caller_confirmation(
             business_name=biz_name,
@@ -275,7 +274,6 @@ def _send_booking_emails(
         )
         send_email(to=caller_email, subject=subject, html=html, text=text)
 
-    # 2. Business owner notification
     company = get_company_by_id(company_id)
     owner_email = (company or {}).get("email")
     if owner_email:
@@ -302,40 +300,135 @@ def _send_booking_emails(
 # Recording helpers — capture per-turn timestamps for transcript/audio sync
 # ---------------------------------------------------------------------------
 
-class _TurnTimestamper(FrameProcessor):
-    """Records (role, seconds-since-recording-start) on each turn boundary.
+class _CallRecorder(FrameProcessor):
+    """Inline recorder + turn timestamper.
 
-    Lets the admin UI seek the audio player to the moment a clicked transcript
-    message was spoken. Uses `monotonic()` from the same instant the audio
-    buffer recorder is started, so the timestamps line up with the WAV.
+    Captures user `InputAudioRawFrame` and bot `OutputAudioRawFrame`
+    (Gemini Live emits `TTSAudioRawFrame`, a subclass) into per-track byte
+    buffers — resampled to a common rate AND padded with silence to keep
+    both tracks aligned to the wall clock. Without the silence-padding
+    step the playback collapses gaps (it sounds like "all bot, then all
+    user") because audio frames only arrive while a side is speaking.
+
+    Pipecat's `AudioBufferProcessor` failed silently with Gemini Live, so
+    we own this path end-to-end.
+
+    Also records `(role, elapsed_seconds)` on each turn boundary so the
+    admin UI can seek the audio player when a transcript line is clicked.
     """
 
-    def __init__(self, sink: List[Tuple[str, float]], t0_holder: Dict[str, Optional[float]], **kwargs):
+    # 16-bit signed PCM = 2 bytes per sample.
+    _BYTES_PER_SAMPLE = 2
+
+    def __init__(
+        self,
+        target_sample_rate: int,
+        turn_events: List[Tuple[str, float]],
+        t0_holder: Dict[str, Optional[float]],
+        **kwargs,
+    ):
         super().__init__(**kwargs)
-        self._sink = sink
+        self._target_sr = target_sample_rate
+        self._user_buf = bytearray()
+        self._bot_buf = bytearray()
+        self._user_resampler = create_stream_resampler()
+        self._bot_resampler = create_stream_resampler()
+        self._turn_events = turn_events
         self._t0_holder = t0_holder
+        self._frame_counts = {"user_audio": 0, "bot_audio": 0}
+        self._first_user_logged = False
+        self._first_bot_logged = False
+
+    def _expected_byte_offset(self, t0: float) -> int:
+        """Bytes into the buffer that wall-clock-now corresponds to."""
+        elapsed = max(0.0, time.monotonic() - t0)
+        return int(elapsed * self._target_sr) * self._BYTES_PER_SAMPLE
+
+    @staticmethod
+    def _pad_to(buf: bytearray, target_bytes: int) -> None:
+        if len(buf) < target_bytes:
+            buf.extend(b"\x00" * (target_bytes - len(buf)))
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
+
+        # Turn timestamps for the transcript-seek feature.
         t0 = self._t0_holder.get("t")
         if t0 is not None:
             elapsed = max(0.0, time.monotonic() - t0)
             if isinstance(frame, UserStartedSpeakingFrame):
-                self._sink.append(("user", elapsed))
+                self._turn_events.append(("user", elapsed))
             elif isinstance(frame, BotStartedSpeakingFrame):
-                self._sink.append(("assistant", elapsed))
+                self._turn_events.append(("assistant", elapsed))
+
+        # Audio capture. InputAudioRawFrame is a SystemFrame, not an
+        # OutputAudioRawFrame, so we check them as separate branches.
+        if isinstance(frame, InputAudioRawFrame) and t0 is not None:
+            self._frame_counts["user_audio"] += 1
+            if not self._first_user_logged:
+                logger.info(
+                    "voice_agent recording: first user audio frame "
+                    "(sr=%d, %d bytes)",
+                    frame.sample_rate, len(frame.audio or b""),
+                )
+                self._first_user_logged = True
+            try:
+                resampled = await self._user_resampler.resample(
+                    frame.audio, frame.sample_rate, self._target_sr
+                )
+                if resampled:
+                    self._pad_to(self._user_buf, self._expected_byte_offset(t0))
+                    self._user_buf.extend(resampled)
+            except Exception:
+                logger.exception("voice_agent recording: user resample failed")
+        elif isinstance(frame, OutputAudioRawFrame) and t0 is not None:
+            self._frame_counts["bot_audio"] += 1
+            if not self._first_bot_logged:
+                logger.info(
+                    "voice_agent recording: first bot audio frame "
+                    "(type=%s, sr=%d, %d bytes)",
+                    type(frame).__name__, frame.sample_rate, len(frame.audio or b""),
+                )
+                self._first_bot_logged = True
+            try:
+                resampled = await self._bot_resampler.resample(
+                    frame.audio, frame.sample_rate, self._target_sr
+                )
+                if resampled:
+                    self._pad_to(self._bot_buf, self._expected_byte_offset(t0))
+                    self._bot_buf.extend(resampled)
+            except Exception:
+                logger.exception("voice_agent recording: bot resample failed")
+
         await self.push_frame(frame, direction)
+
+    def merged_pcm(self) -> bytes:
+        """Mix user + bot tracks into a single mono PCM stream.
+
+        Both buffers are wall-clock-aligned (silence-padded as frames arrived),
+        so a simple sample-wise mix produces the correct interleaved playback.
+        """
+        # Final equalization — pad whichever buffer ended early so mix doesn't
+        # truncate the longer side's tail.
+        max_len = max(len(self._user_buf), len(self._bot_buf))
+        self._pad_to(self._user_buf, max_len)
+        self._pad_to(self._bot_buf, max_len)
+
+        logger.info(
+            "voice_agent recording: finalizing — user=%d bytes (%d frames), "
+            "bot=%d bytes (%d frames)",
+            len(self._user_buf), self._frame_counts["user_audio"],
+            len(self._bot_buf), self._frame_counts["bot_audio"],
+        )
+        if not self._user_buf and not self._bot_buf:
+            return b""
+        return mix_audio(bytes(self._user_buf), bytes(self._bot_buf))
 
 
 def _attach_timestamps(
     transcript: List[Dict[str, Any]],
     turn_events: List[Tuple[str, float]],
 ) -> List[Dict[str, Any]]:
-    """Annotate transcript entries with `t` (seconds offset into recording).
-
-    Walks both lists in order, matching by role. Tool-call entries inherit the
-    timestamp of the assistant turn that produced them so a click still seeks
-    to a sensible spot."""
     user_times = [t for r, t in turn_events if r == "user"]
     asst_times = [t for r, t in turn_events if r == "assistant"]
     ui = ai = 0
@@ -356,27 +449,38 @@ def _attach_timestamps(
 
 
 # ---------------------------------------------------------------------------
-# Pipeline factory (transport-agnostic)
+# Gemini Live pipeline
 # ---------------------------------------------------------------------------
-
-_VOICE_REMAP = {
-    "aura-asteria-en": "aura-2-andromeda-en",
-    "aura-luna-en": "aura-2-aurora-en",
-    "aura-orion-en": "aura-2-odysseus-en",
-    "aura-helios-en": "aura-2-atlas-en",
-}
 
 # Gemini Live's catalog of TTS voices. The dashboard prefixes the stored value
 # with `gemini-` so we can route by provider; we strip the prefix here.
 _GEMINI_VOICES = {"aoede", "charon", "fenrir", "kore", "puck"}
 
+# Default Gemini Live model. Per-tenant override available via
+# voice_agent_settings.llm_model (the dashboard picker writes there).
+# Bump this when Google ships a newer GA Live model.
+DEFAULT_GEMINI_LIVE_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
+
+# Model IDs the dashboard exposes. Anything else gets coerced to the default
+# so a stale/typo'd setting can't crash the pipeline.
+SUPPORTED_GEMINI_LIVE_MODELS = {
+    "gemini-2.5-flash-native-audio-preview-12-2025",  # Recommended
+    "gemini-2.5-flash-native-audio-preview-09-2025",  # Older preview
+    "gemini-3.1-flash-live-preview",                  # Experimental, lowest latency
+}
+
+
+def _resolve_model(va_settings: Dict[str, Any]) -> str:
+    requested = (va_settings.get("llm_model") or "").strip()
+    if requested in SUPPORTED_GEMINI_LIVE_MODELS:
+        return requested
+    return DEFAULT_GEMINI_LIVE_MODEL
+
 
 def _resolve_gemini_voice(voice_model: Optional[str]) -> str:
     """Pick the Gemini voice id from the saved `voice_model` setting.
 
-    Falls back to Aoede if the user picked a Deepgram (aura-*) voice or left
-    it blank — that way browser test still works without forcing them to
-    re-pick on the Gemini panel."""
+    Falls back to Aoede if blank or set to a legacy non-Gemini voice."""
     raw = (voice_model or "").strip().lower()
     if raw.startswith("gemini-"):
         name = raw.removeprefix("gemini-")
@@ -384,130 +488,6 @@ def _resolve_gemini_voice(voice_model: Optional[str]) -> str:
             return name.capitalize()
     return "Aoede"
 
-
-def _resolve_deepgram_voice(voice_model: Optional[str]) -> str:
-    """Pick the Deepgram Aura voice id from the saved `voice_model`.
-
-    Falls back to Andromeda if the user picked a Gemini voice."""
-    raw = (voice_model or "").strip()
-    if raw.startswith("aura-"):
-        return _VOICE_REMAP.get(raw, raw)
-    return "aura-2-andromeda-en"
-
-
-def _keyterms_for(va_settings: Dict[str, Any]) -> List[str]:
-    """Words to boost in Deepgram Nova-3. Domain vocab dominates STT errors —
-    business names, service types, and field labels are the highest-leverage
-    boosts."""
-    terms: List[str] = []
-    for key in ("business_name", "business_type"):
-        v = (va_settings.get(key) or "").strip()
-        if v:
-            terms.append(v)
-    for f in va_settings.get("appointment_fields") or []:
-        fd = FIELD_DEFS.get(f)
-        if fd:
-            terms.append(fd["label"])
-    # Common booking words callers say — boosts wake the model up to expect them.
-    terms.extend(["appointment", "booking", "schedule", "reschedule", "cancel"])
-    # Dedupe while preserving order.
-    seen: set = set()
-    out: List[str] = []
-    for t in terms:
-        k = t.lower()
-        if k and k not in seen:
-            seen.add(k)
-            out.append(t)
-    return out
-
-
-def _build_task(
-    company_id: str,
-    va_settings: Dict[str, Any],
-    transport: BaseTransport,
-    *,
-    audio_in_sample_rate: int,
-    audio_out_sample_rate: int,
-    on_booked: Optional[Callable[[Dict[str, Any]], Awaitable[None]]],
-    extra_processors: Optional[List[FrameProcessor]] = None,
-) -> Tuple[PipelineTask, LLMContext]:
-    """Wire STT → LLM → TTS around the given transport."""
-    deepgram_key = app_settings.deepgram_api_key
-    groq_key = app_settings.groq_api_key
-    if not deepgram_key:
-        raise RuntimeError("DEEPGRAM_API_KEY is required")
-    if not groq_key:
-        raise RuntimeError("GROQ_API_KEY is required")
-
-    stt = DeepgramSTTService(
-        api_key=deepgram_key,
-        live_options=LiveOptions(keyterm=_keyterms_for(va_settings)),
-    )
-    # llama-3.3 is non-reasoning, predictable, and fast. gpt-oss models leaked
-    # their chain-of-thought into the spoken output ("we need placeholder until
-    # they give... too bad") even with reasoning_effort=low — wrong family for
-    # voice. Hard token cap keeps responses to a single turn.
-    llm = GroqLLMService(
-        api_key=groq_key,
-        model=va_settings.get("llm_model") or "llama-3.3-70b-versatile",
-        params=GroqLLMService.InputParams(
-            temperature=0.6,
-            max_completion_tokens=150,
-        ),
-    )
-
-    voice = _resolve_deepgram_voice(va_settings.get("voice_model"))
-    tts = DeepgramTTSService(api_key=deepgram_key, voice=voice)
-
-    tools = ToolsSchema(standard_tools=[_book_appointment_schema(va_settings)])
-    llm.register_function("book_appointment", _make_book_handler(company_id, va_settings, on_booked))
-
-    system_prompt = build_system_prompt(company_id, va_settings)
-    context = LLMContext(messages=[{"role": "system", "content": system_prompt}], tools=tools)
-
-    # Smart Turn v3 is a small ONNX model that detects *semantic* end-of-turn,
-    # not just silence — stops the agent from interrupting "uhh... let me think".
-    # Silero VAD still runs for start-of-turn detection.
-    turn_strategies = UserTurnStrategies(
-        start=default_user_turn_start_strategies(),
-        stop=[TurnAnalyzerUserTurnStopStrategy(turn_analyzer=LocalSmartTurnAnalyzerV3())],
-    )
-    user_aggregator, assistant_aggregator = LLMContextAggregatorPair(
-        context,
-        user_params=LLMUserAggregatorParams(
-            vad_analyzer=SileroVADAnalyzer(),
-            user_turn_strategies=turn_strategies,
-        ),
-    )
-
-    pipeline = Pipeline(
-        [
-            transport.input(),
-            stt,
-            user_aggregator,
-            llm,
-            tts,
-            transport.output(),
-            *(extra_processors or []),
-            assistant_aggregator,
-        ]
-    )
-
-    task = PipelineTask(
-        pipeline,
-        params=PipelineParams(
-            audio_in_sample_rate=audio_in_sample_rate,
-            audio_out_sample_rate=audio_out_sample_rate,
-            allow_interruptions=True,
-        ),
-    )
-
-    return task, context
-
-
-# ---------------------------------------------------------------------------
-# Gemini Live (speech-to-speech) pipeline factory
-# ---------------------------------------------------------------------------
 
 def _build_gemini_task(
     company_id: str,
@@ -521,13 +501,12 @@ def _build_gemini_task(
 ) -> Tuple[PipelineTask, LLMContext]:
     """Single-service pipeline using Gemini Live's native speech-to-speech.
 
-    Replaces STT → LLM → TTS with one streaming connection. Smart Turn isn't
-    needed (Gemini does its own turn detection); Silero VAD still feeds the
-    user-side context aggregator.
+    Silero VAD feeds the user-side context aggregator; Gemini's own server-side
+    turn detection drives end-of-turn signaling.
     """
     gemini_key = app_settings.gemini_api_key
     if not gemini_key:
-        raise RuntimeError("GEMINI_API_KEY is required for Gemini Live")
+        raise RuntimeError("GEMINI_API_KEY is required")
 
     tools = ToolsSchema(standard_tools=[_book_appointment_schema(va_settings)])
 
@@ -535,23 +514,25 @@ def _build_gemini_task(
     greeting = (va_settings.get("greeting_message") or "").strip() or (
         "Hello! Thanks for calling. How can I help you today?"
     )
-    # Gemini Live speaks via the model itself (no TTS bypass), so we steer the
-    # opening line through the system prompt rather than queuing a TTS frame.
     full_prompt = (
         f"{system_prompt}\n\n# First Words\n"
         f'Begin the call by saying exactly: "{greeting}"'
     )
 
+    # Small thinking budget gives the model room for date arithmetic and
+    # tool-arg structuring (the booking turn is where hallucinations hurt
+    # most). 0 was fastest TTFT but caused wrong-day bookings.
+    model = _resolve_model(va_settings)
     llm = GeminiLiveLLMService(
         api_key=gemini_key,
         settings=GeminiLiveLLMService.Settings(
-            model="gemini-2.5-flash-native-audio-preview-09-2025",
+            model=model,
             voice=_resolve_gemini_voice(va_settings.get("voice_model")),
             system_instruction=full_prompt,
-            # thinking_budget=0 = no chain-of-thought, fastest TTFT for voice.
-            thinking=ThinkingConfig(thinking_budget=0),
+            thinking=ThinkingConfig(thinking_budget=256),
         ),
     )
+    logger.info("voice_agent: using Gemini Live model=%s", model)
     llm.register_function(
         "book_appointment", _make_book_handler(company_id, va_settings, on_booked)
     )
@@ -562,13 +543,19 @@ def _build_gemini_task(
         user_params=LLMUserAggregatorParams(vad_analyzer=SileroVADAnalyzer()),
     )
 
+    # extra_processors (audio_buffer + timestamper) MUST sit between `llm`
+    # and `transport.output()`. transport.output() consumes OutputAudioRawFrame
+    # (and its TTSAudioRawFrame subclass that GeminiLiveLLMService emits) —
+    # it routes the frame to the WebRTC sender's queue but never pushes it
+    # downstream. So anything placed after transport.output() never sees bot
+    # audio, which is why call recordings were silent on the bot side.
     pipeline = Pipeline(
         [
             transport.input(),
             user_aggregator,
             llm,
-            transport.output(),
             *(extra_processors or []),
+            transport.output(),
             assistant_aggregator,
         ]
     )
@@ -584,22 +571,13 @@ def _build_gemini_task(
     return task, context
 
 
-# ---------------------------------------------------------------------------
-# Twilio entry point
-# ---------------------------------------------------------------------------
-
 def _serialize_transcript(messages: List[Any]) -> List[Dict[str, Any]]:
-    """Reduce LLMContext messages to {role, content} pairs for the DB.
-
-    OpenAI/Groq message shapes vary (string content vs list-of-parts) so we
-    flatten to a string. Tool-call requests/results land as their own roles."""
+    """Reduce LLMContext messages to {role, content} pairs for the DB."""
     out: List[Dict[str, Any]] = []
     for m in messages:
-        # Each message is a dict-like with at least "role"; "content" may be
-        # str, list of parts, or absent (function-call requests).
         role = (m.get("role") if isinstance(m, dict) else getattr(m, "role", None)) or "unknown"
         if role == "system":
-            continue  # don't persist the giant system prompt with every call
+            continue
         content = m.get("content") if isinstance(m, dict) else getattr(m, "content", None)
         if isinstance(content, list):
             text = " ".join(
@@ -609,7 +587,6 @@ def _serialize_transcript(messages: List[Any]) -> List[Dict[str, Any]]:
             text = content
         else:
             text = ""
-        # Capture tool calls too, in a compact form
         tool_calls = m.get("tool_calls") if isinstance(m, dict) else getattr(m, "tool_calls", None)
         if tool_calls:
             for tc in tool_calls:
@@ -627,125 +604,57 @@ async def _run_call(
     company_id: str,
     va_settings: Dict[str, Any],
     *,
-    source: str,
     audio_in_sample_rate: int,
     audio_out_sample_rate: int,
     caller_ref: Optional[str] = None,
 ) -> None:
-    """Shared run loop for browser + Twilio. Owns greeting, transcript save."""
+    """Run loop for a browser call. Owns greeting, recording, transcript save."""
     started_at = datetime.now(timezone.utc)
-    call_log_id = create_call_log(company_id, source=source, caller_ref=caller_ref)
+    call_log_id = create_call_log(company_id, source="browser", caller_ref=caller_ref)
     booked_appointment_id: Dict[str, Optional[str]] = {"id": None}
 
     async def on_booked(appt: Dict[str, Any]) -> None:
         booked_appointment_id["id"] = appt.get("appointment_id")
 
-    # Recording: a single mono buffer (user + bot mixed) at the input rate.
-    # Twilio is 8kHz, browser is 16/24kHz — we record at the input rate to
-    # avoid resampling cost mid-call. WAV file size at 16kHz mono is ~1MB/min.
+    # Record at the input sample rate (16kHz) — bot audio is resampled down
+    # from Gemini's 24kHz output. 16kHz mono PCM is ~30KB/sec, plenty for voice.
     recording_rate = audio_in_sample_rate
-    audio_buffer = AudioBufferProcessor(sample_rate=recording_rate, num_channels=1)
     turn_events: List[Tuple[str, float]] = []
     t0_holder: Dict[str, Optional[float]] = {"t": None}
-    timestamper = _TurnTimestamper(turn_events, t0_holder)
+    recorder = _CallRecorder(
+        target_sample_rate=recording_rate,
+        turn_events=turn_events,
+        t0_holder=t0_holder,
+    )
 
-    pcm_chunks: List[bytes] = []
-    track_pcm: Dict[str, bytearray] = {"user": bytearray(), "bot": bytearray()}
-
-    @audio_buffer.event_handler("on_audio_data")
-    async def _on_audio(_proc, audio: bytes, _sample_rate: int, _num_channels: int):
-        # Fires once on stop_recording with the full merged buffer (and would
-        # also fire periodically if buffer_size>0, which we don't set).
-        logger.info(
-            "voice_agent recording: on_audio_data fired (merged %d bytes)",
-            len(audio or b""),
-        )
-        if audio:
-            pcm_chunks.append(audio)
-
-    @audio_buffer.event_handler("on_track_audio_data")
-    async def _on_tracks(_proc, user_audio: bytes, bot_audio: bytes, _sample_rate: int, _num_channels: int):
-        # Defensive fallback: if the merge path returns empty (one side never
-        # had audio for some reason), the per-track tracks may still hold data.
-        logger.info(
-            "voice_agent recording: on_track_audio_data fired (user %d, bot %d)",
-            len(user_audio or b""),
-            len(bot_audio or b""),
-        )
-        if user_audio:
-            track_pcm["user"].extend(user_audio)
-        if bot_audio:
-            track_pcm["bot"].extend(bot_audio)
-
-    # Browser + Gemini key set → use speech-to-speech. Twilio (8kHz) and the
-    # no-Gemini-key case fall back to the Deepgram + Groq chain.
-    use_gemini = source == "browser" and bool(app_settings.gemini_api_key)
-    builder = _build_gemini_task if use_gemini else _build_task
-    task, context = builder(
+    task, context = _build_gemini_task(
         company_id,
         va_settings,
         transport,
         audio_in_sample_rate=audio_in_sample_rate,
         audio_out_sample_rate=audio_out_sample_rate,
         on_booked=on_booked,
-        extra_processors=[audio_buffer, timestamper],
-    )
-
-    greeting = (va_settings.get("greeting_message") or "").strip() or (
-        "Hello! Thanks for calling. How can I help you today?"
+        extra_processors=[recorder],
     )
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(_t, _c):
-        # Start recording at the same wall-clock instant we anchor turn
-        # timestamps, so seek offsets line up with the WAV.
         t0_holder["t"] = time.monotonic()
-        await audio_buffer.start_recording()
-        if use_gemini:
-            # Gemini Live speaks the greeting via the model itself (steered by
-            # the "First Words" section in the system prompt). LLMRunFrame
-            # triggers the initial inference once the WebRTC peer is ready.
-            await task.queue_frames([LLMRunFrame()])
-        else:
-            # Bypass the LLM for the opening line so the user-configured
-            # greeting is spoken VERBATIM via TTS. `append_to_context=True`
-            # records it as the assistant's first turn so the LLM doesn't
-            # greet again on the next turn.
-            await task.queue_frames([
-                TTSSpeakFrame(text=greeting, append_to_context=True),
-            ])
+        logger.info("voice_agent recording: call %s started", call_log_id)
+        # Gemini Live speaks the greeting via the model itself (steered by the
+        # "First Words" section in the system prompt). LLMRunFrame triggers
+        # the initial inference once the WebRTC peer is ready.
+        await task.queue_frames([LLMRunFrame()])
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(_t, _c):
         try:
-            # Stop recording first so the on_audio_data handler fires and
-            # populates pcm_chunks before we encode/upload.
-            try:
-                await audio_buffer.stop_recording()
-            except Exception:
-                logger.exception("audio_buffer.stop_recording failed")
-
             recording_url: Optional[str] = None
             recording_format: Optional[str] = None
-            pcm = b"".join(pcm_chunks)
-            # Fallback: if the merged path produced nothing (e.g. the buffer
-            # processor cleared its primary buffers before stop fired), fall
-            # back to the longer of the per-track buffers so we don't lose
-            # the recording entirely.
-            if not pcm:
-                user_bytes = bytes(track_pcm["user"])
-                bot_bytes = bytes(track_pcm["bot"])
-                pcm = user_bytes if len(user_bytes) >= len(bot_bytes) else bot_bytes
-                if pcm:
-                    logger.warning(
-                        "voice_agent recording: merged buffer empty, falling "
-                        "back to per-track audio (%d bytes)",
-                        len(pcm),
-                    )
+            pcm = recorder.merged_pcm()
             logger.info(
                 "voice_agent recording: collected %d PCM bytes for call %s",
-                len(pcm),
-                call_log_id,
+                len(pcm), call_log_id,
             )
             if pcm:
                 try:
@@ -758,6 +667,11 @@ async def _run_call(
                         logger.warning("voice_agent recording upload returned None")
                 except Exception:
                     logger.exception("Failed to encode/upload call recording")
+            else:
+                logger.warning(
+                    "voice_agent recording: no audio captured for call %s",
+                    call_log_id,
+                )
 
             transcript = _attach_timestamps(
                 _serialize_transcript(list(context.messages)),
@@ -778,42 +692,6 @@ async def _run_call(
     await runner.run(task)
 
 
-async def run_twilio_call(
-    websocket: WebSocket,
-    company_id: str,
-    va_settings: Dict[str, Any],
-) -> None:
-    """Bridge a Twilio media stream through the Pipecat pipeline."""
-    _, call_data = await parse_telephony_websocket(websocket)
-
-    serializer = TwilioFrameSerializer(
-        stream_sid=call_data["stream_id"],
-        call_sid=call_data["call_id"],
-        account_sid=va_settings.get("twilio_account_sid") or "",
-        auth_token=va_settings.get("twilio_auth_token") or "",
-    )
-
-    transport = FastAPIWebsocketTransport(
-        websocket=websocket,
-        params=FastAPIWebsocketParams(
-            audio_in_enabled=True,
-            audio_out_enabled=True,
-            add_wav_header=False,
-            serializer=serializer,
-        ),
-    )
-
-    await _run_call(
-        transport,
-        company_id,
-        va_settings,
-        source="twilio",
-        audio_in_sample_rate=8000,
-        audio_out_sample_rate=8000,
-        caller_ref=call_data.get("call_id"),
-    )
-
-
 # ---------------------------------------------------------------------------
 # Browser SmallWebRTC entry point
 # ---------------------------------------------------------------------------
@@ -830,12 +708,7 @@ async def handle_browser_offer(
     company_id: str,
     va_settings: Dict[str, Any],
 ) -> Optional[Dict[str, str]]:
-    """Process a SmallWebRTC SDP offer and start the pipeline.
-
-    Returns the SDP answer payload that the browser client expects (sdp, type,
-    pc_id). The Pipecat pipeline runs as a background task tied to the
-    connection's lifecycle — closing the peer connection cancels the task.
-    """
+    """Process a SmallWebRTC SDP offer and start the pipeline."""
 
     async def _on_connection(connection: SmallWebRTCConnection) -> None:
         transport = SmallWebRTCTransport(
@@ -843,15 +716,12 @@ async def handle_browser_offer(
             params=TransportParams(audio_in_enabled=True, audio_out_enabled=True),
         )
 
-        # Run the pipeline in the background so the offer endpoint can return
-        # its SDP answer immediately.
         import asyncio
         asyncio.create_task(
             _run_call(
                 transport,
                 company_id,
                 va_settings,
-                source="browser",
                 audio_in_sample_rate=16000,
                 audio_out_sample_rate=24000,
             )
