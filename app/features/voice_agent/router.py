@@ -1,38 +1,26 @@
 """
-Voice Agent — HTTP endpoints.
+Voice Agent — dashboard-facing HTTP endpoints.
 
-Browser-only. Pipeline runs Gemini Live over SmallWebRTC (SDP offer/answer
-+ trickle ICE). Phone-call (Twilio) support was removed.
+Routes here are user/company-authenticated. Worker callbacks live under
+/voice/internal/* (see app/features/voice_internal/router.py).
 """
 
 import logging
-from typing import Any, Dict
+from dataclasses import asdict
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import Response
+from fastapi import APIRouter, Depends
 
-from app.core.security import get_current_user_info
-from app.features.auth.dependencies import get_current_company, UserContext
-from app.features.auth.repository import get_company_by_id
-from app.features.billing.service import is_plan_active
-from app.features.voice_agent import service
-from app.features.voice_agent.call_log_repository import list_call_logs
-from app.features.voice_agent.repository import get_settings as get_va_settings
+from app.features.auth.dependencies import UserContext, get_current_company
+from app.features.voice_agent import call_log_repository, livekit_token, service
 from app.features.voice_agent.schemas import VoiceAgentSettingsRequest
-
-# Pipecat imports (aiortc, opencv, silero/torch) are deferred to call-handler
-# bodies so they don't run on app startup. Loading them eagerly at module
-# import slows boot by 20–30s on Railway and bloats memory for every tenant
-# regardless of whether they ever touch voice.
 
 logger = logging.getLogger("wispoke.voice")
 
 router = APIRouter(prefix="/voice-agent", tags=["voice-agent"])
 
 
-# ---------------------------------------------------------------------------
-# Settings CRUD
-# ---------------------------------------------------------------------------
+# ─── Settings CRUD ─────────────────────────────────────────────────────────
+
 
 @router.get("/settings")
 async def get_settings(current_user: UserContext = Depends(get_current_company)):
@@ -48,135 +36,46 @@ async def update_settings(
     return service.update_settings(current_user.company_id, data)
 
 
-# ---------------------------------------------------------------------------
-# Call logs (transcripts + linked bookings)
-# ---------------------------------------------------------------------------
+# ─── LiveKit token (browser test calls) ────────────────────────────────────
+
+
+@router.post("/livekit-token")
+async def issue_livekit_token(current_user: UserContext = Depends(get_current_company)):
+    """Mint a short-lived LiveKit access token for the dashboard's test panel.
+
+    Uses the tenant's currently-saved `language` so the worker dispatches with
+    matching locale metadata. The room name embeds the company_id which the
+    worker reads via `ctx.job.metadata` to load tenant config.
+    """
+    settings = service.get_settings(current_user.company_id)
+    response = livekit_token.mint_browser_token(
+        company_id=current_user.company_id,
+        identity_email=current_user.email or current_user.company_id,
+        language=settings.get("language") or "en",
+    )
+    return asdict(response)
+
+
+# ─── Call logs (read; transcripts + outcomes) ──────────────────────────────
+
 
 @router.get("/call-logs")
-async def get_call_logs(
+async def list_call_logs(
     limit: int = 25,
     offset: int = 0,
     current_user: UserContext = Depends(get_current_company),
 ):
-    page = list_call_logs(current_user.company_id, limit=limit, offset=offset)
+    # Clamp pagination to sane bounds — guards against accidental DoS via
+    # a wide ?limit=999999 from a misbehaving client.
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
+
+    page = call_log_repository.list_call_logs(current_user.company_id, limit=limit, offset=offset)
+    items = page["items"]
     return {
-        "call_logs": page["items"],
+        "call_logs": items,
         "total": page["total"],
         "limit": limit,
         "offset": offset,
-        "has_more": offset + len(page["items"]) < page["total"],
+        "has_more": offset + len(items) < page["total"],
     }
-
-
-# ---------------------------------------------------------------------------
-# Browser test call — Pipecat SmallWebRTC SDP offer/answer
-# ---------------------------------------------------------------------------
-
-@router.post("/offer")
-async def voice_agent_offer(payload: Dict[str, Any], token: str = ""):
-    """Browser POSTs an SDP offer here; we return an SDP answer.
-
-    Auth: JWT in `?token=...` query param (the Pipecat client SDK can attach
-    arbitrary query params to its connection URL).
-    """
-    user_info = get_current_user_info(token) if token else None
-    if not user_info or user_info.get("user_type") != "company":
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    company_id = user_info.get("company_id")
-    company = get_company_by_id(company_id)
-    if not company or not is_plan_active(company):
-        raise HTTPException(status_code=403, detail="Voice agent requires a Pro plan.")
-
-    va_settings = get_va_settings(company_id) or {}
-
-    from pipecat.transports.smallwebrtc.request_handler import SmallWebRTCRequest
-    from app.features.voice_agent.pipeline import handle_browser_offer
-
-    request = SmallWebRTCRequest(
-        sdp=payload["sdp"],
-        type=payload["type"],
-        pc_id=payload.get("pc_id"),
-        restart_pc=payload.get("restart_pc"),
-    )
-
-    answer = await handle_browser_offer(request, company_id, va_settings)
-    if answer is None:
-        raise HTTPException(status_code=500, detail="Failed to negotiate WebRTC connection")
-    return answer
-
-
-@router.patch("/offer")
-async def voice_agent_offer_patch(payload: Dict[str, Any], token: str = ""):
-    """Browser PATCHes ICE candidates for an in-flight peer connection.
-
-    Pipecat's PATCH payload is `{pc_id, candidates: [{candidate, sdp_mid,
-    sdp_mline_index}]}` — different shape than POST (no `sdp`/`type`).
-    """
-    user_info = get_current_user_info(token) if token else None
-    if not user_info or user_info.get("user_type") != "company":
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-    company = get_company_by_id(user_info.get("company_id"))
-    if not company or not is_plan_active(company):
-        raise HTTPException(status_code=403, detail="Voice agent requires a Pro plan.")
-
-    from pipecat.transports.smallwebrtc.request_handler import (
-        IceCandidate,
-        SmallWebRTCPatchRequest,
-    )
-    from app.features.voice_agent.pipeline import handle_browser_patch
-
-    candidates = [
-        IceCandidate(
-            candidate=c.get("candidate", ""),
-            sdp_mid=c.get("sdp_mid") or c.get("sdpMid") or "",
-            sdp_mline_index=c.get("sdp_mline_index") if c.get("sdp_mline_index") is not None else c.get("sdpMLineIndex", 0),
-        )
-        for c in payload.get("candidates", [])
-    ]
-    patch = SmallWebRTCPatchRequest(pc_id=payload["pc_id"], candidates=candidates)
-
-    await handle_browser_patch(patch)
-    return {"ok": True}
-
-
-# ---------------------------------------------------------------------------
-# Voice samples (for the dashboard's voice picker preview button)
-# ---------------------------------------------------------------------------
-
-@router.get("/voice-sample/{voice_id}")
-async def voice_sample(voice_id: str):
-    """Stream preview audio for a Gemini voice.
-
-    Streams the WAV bytes directly (no redirect) so the browser's `<audio>`
-    element doesn't have to deal with cross-origin redirect quirks. Bytes
-    are cached in Supabase Storage so generation only happens once per voice.
-    """
-    from app.features.voice_agent.voice_samples import (
-        GEMINI_VOICE_NAMES,
-        get_or_create_sample_bytes,
-    )
-
-    # Accept "gemini-aoede" or just "Aoede" — normalize to the catalog name.
-    raw = voice_id.strip()
-    if raw.lower().startswith("gemini-"):
-        raw = raw[len("gemini-"):]
-    voice_name = raw.capitalize()
-    if voice_name not in GEMINI_VOICE_NAMES:
-        raise HTTPException(status_code=404, detail=f"Unknown voice: {voice_id}")
-
-    wav = get_or_create_sample_bytes(voice_name)
-    if not wav:
-        raise HTTPException(status_code=503, detail="Sample generation failed; check server logs")
-    return Response(
-        content=wav,
-        media_type="audio/wav",
-        headers={
-            # Cache aggressively at the edge — samples never change for a given voice.
-            "Cache-Control": "public, max-age=86400",
-            "Content-Length": str(len(wav)),
-        },
-    )
-
-

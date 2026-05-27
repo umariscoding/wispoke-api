@@ -38,19 +38,6 @@ def create_appointment(company_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
     new_start = data["start_time"][:5]
     new_end = data["end_time"][:5]
 
-    # Reject voice-agent bookings outside the published availability — the
-    # LLM only ever sees offered slots, so anything else is a hallucination.
-    # Manual UI bookings are exempt: staff may book outside hours intentionally.
-    if data.get("source") == "voice_agent":
-        from app.features.availability.service import get_available_slots_for_date
-
-        duration = data.get("duration_min", 30)
-        offered = get_available_slots_for_date(company_id, data["scheduled_date"], duration)
-        if not any(s["start_time"] == new_start for s in offered):
-            raise ValidationError(
-                f"{new_start} on {data['scheduled_date']} is not an offered slot"
-            )
-
     # Check for conflicting appointments
     existing = repo.get_appointments_for_date(company_id, data["scheduled_date"])
     for appt in existing:

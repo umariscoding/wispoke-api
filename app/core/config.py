@@ -22,12 +22,25 @@ class Settings(BaseSettings):
     # --- Google OAuth ---
     google_client_id: Optional[str] = None
 
-    # --- LLM provider keys (used by RAG/chat — not the voice agent) ---
+    # --- LLM provider keys (used by RAG/chat AND voice agent) ---
     groq_api_key: Optional[str] = None
     openai_api_key: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
 
-    # --- Voice Agent (Gemini Live speech-to-speech, browser only) ---
-    gemini_api_key: Optional[str] = None
+    # --- Voice Agent providers (consumed by wispoke-voice worker, surfaced here
+    # so the API can validate that a tenant's chosen provider has a key) ---
+    deepgram_api_key: Optional[str] = None
+    elevenlabs_api_key: Optional[str] = None
+
+    # --- LiveKit (token minting; the SDK lives in wispoke-voice) ---
+    livekit_url: Optional[str] = None
+    livekit_api_key: Optional[str] = None
+    livekit_api_secret: Optional[str] = None
+
+    # --- Voice service-to-service JWT (separate secret from user JWT) ---
+    # Used by the voice worker to authenticate callbacks into /voice/internal/*.
+    # Generate with: python -c "import secrets; print(secrets.token_hex(32))"
+    voice_service_jwt_secret: Optional[str] = None
 
     # --- Email (Resend) ---
     # When unset, send_email is a no-op so the app still runs in dev.

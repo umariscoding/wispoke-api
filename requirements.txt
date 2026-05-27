@@ -33,12 +33,10 @@ docx2txt==0.8
 # Templating
 jinja2==3.1.4
 
-# Voice Agent — Pipecat pipeline (Gemini Live, browser only).
-# Extras:
-#  - `google`: Gemini Live speech-to-speech LLM service
-#  - `silero`: Voice Activity Detection
-#  - `webrtc`: aiortc for browser SmallWebRTC transport
-pipecat-ai[google,silero,webrtc]==1.0.0
+# LiveKit — token minting only. The Agents framework runs in wispoke-voice/
+# (separate worker process) — keeping it out of the API image prevents the
+# voice deps (deepgram/elevenlabs/silero) from bloating FastAPI boot time.
+livekit-api>=1.0.0,<2
 
 # Email — transactional (booking confirmations, owner notifications)
 resend==2.4.0
