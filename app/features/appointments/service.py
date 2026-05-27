@@ -2,11 +2,40 @@
 Appointments — business logic.
 """
 
+import re
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 
 from app.core.exceptions import NotFoundError, ValidationError
 from app.features.appointments import repository as repo
+
+
+# E.164 phone normalization. Voice transcripts deliver phone numbers in any
+# format the caller chose to read out — "(555) 123-4567", "0 3 2 2 6 5 7 ...",
+# "five five five ...". By the time the STT hands us text we usually have
+# digits, but with random separators. We strip everything down to "+" + digits.
+# If the caller never said a country code, we leave it unprefixed — better an
+# inconsistent record than a wrong country prefix guess.
+_PHONE_NORMALIZE = re.compile(r"[^\d+]")
+_LEADING_PLUSES = re.compile(r"^\++")
+
+
+def _normalize_phone(raw: Optional[str]) -> Optional[str]:
+    if raw is None:
+        return None
+    raw = raw.strip()
+    if not raw:
+        return None
+    # Strip everything except digits and a single leading "+".
+    stripped = _PHONE_NORMALIZE.sub("", raw)
+    if stripped.startswith("+"):
+        # Collapse "++45..." → "+45..." in case the caller said "plus plus"
+        stripped = "+" + _LEADING_PLUSES.sub("", stripped)
+    # Drop pathologically short numbers — they're transcription noise, not phones.
+    digits_only = stripped.lstrip("+")
+    if len(digits_only) < 7:
+        return None
+    return stripped
 
 
 def list_appointments(company_id: str, from_date: Optional[str] = None,
@@ -24,6 +53,13 @@ def get_appointment(company_id: str, appointment_id: str) -> Dict[str, Any]:
 def create_appointment(company_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
     if not data.get("scheduled_date") or not data.get("start_time"):
         raise ValidationError("scheduled_date and start_time are required")
+
+    # Normalize phone at the API write boundary so every row stored has a
+    # consistent shape regardless of source (voice transcript, dashboard form,
+    # webhook). Worker → voice_internal → here, so the normalization covers
+    # both manual and voice-agent bookings without duplication.
+    if "caller_phone" in data:
+        data["caller_phone"] = _normalize_phone(data["caller_phone"])
 
     # Calculate end_time from start_time + duration if not provided
     if not data.get("end_time"):

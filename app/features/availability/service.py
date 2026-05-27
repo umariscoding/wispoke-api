@@ -15,6 +15,41 @@ def get_weekly_schedule(company_id: str) -> List[Dict[str, Any]]:
     return repo.get_schedules(company_id)
 
 
+# Postgres CHECK constraint requires `end_time > start_time`, so we use
+# 23:59:59 — covers the full day for booking purposes (slot duration is
+# always ≥ 5 minutes so 23:59 → 24:00 round-trip can't be selected).
+_FULL_DAY_START = "00:00:00"
+_FULL_DAY_END = "23:59:59"
+
+
+def seed_default_availability(company_id: str) -> List[Dict[str, Any]]:
+    """Insert a 24/7 default schedule for a fresh tenant.
+
+    Idempotent: if the tenant already has any active schedule rows, this is a
+    no-op so we don't double-insert on retry. Returns the rows that exist
+    after the call (either the freshly inserted set or what was already there).
+
+    Called from the auth registration flow. Best-effort by the caller — a
+    failure here should not break user signup; the dashboard's availability
+    page lets them set it manually if needed.
+    """
+    existing = repo.get_schedules(company_id)
+    if existing:
+        return existing
+
+    rows: List[Dict[str, Any]] = []
+    for day_of_week in range(7):  # 0=Sunday … 6=Saturday
+        row = repo.create_schedule_slot(
+            company_id=company_id,
+            day_of_week=day_of_week,
+            start_time=_FULL_DAY_START,
+            end_time=_FULL_DAY_END,
+            is_active=True,
+        )
+        rows.append(row)
+    return rows
+
+
 def set_weekly_schedule(company_id: str, slots: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Replace the entire weekly schedule."""
     for slot in slots:

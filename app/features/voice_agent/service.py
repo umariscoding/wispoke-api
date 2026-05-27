@@ -37,8 +37,8 @@ _DEFAULTS: Dict[str, Any] = {
     "timezone": "Europe/Copenhagen",
     "stt_provider": "deepgram",
     "llm_provider": "openai",
-    "tts_provider": "elevenlabs",
-    "voice_model": "EXAVITQu4vr4xnSDxMaL",  # ElevenLabs Sarah (current premade default)
+    "tts_provider": "deepgram",
+    "voice_model": "aura-2-thalia-en",  # Deepgram Aura-2 default (lowest TTFB)
     "llm_model": "gpt-4o",
 }
 

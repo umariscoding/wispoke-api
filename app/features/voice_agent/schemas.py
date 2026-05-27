@@ -32,7 +32,7 @@ class VoiceAgentSettingsRequest(BaseModel):
     # Provider abstraction — must match migration 010's CHECK constraints
     stt_provider: Optional[str] = Field(default=None, pattern="^(deepgram|speechmatics)$")
     llm_provider: Optional[str] = Field(default=None, pattern="^(openai|anthropic)$")
-    tts_provider: Optional[str] = Field(default=None, pattern="^(elevenlabs|cartesia|azure)$")
+    tts_provider: Optional[str] = Field(default=None, pattern="^(deepgram|openai|elevenlabs|cartesia|azure)$")
 
     # Model selection (free-form strings; validated by the worker at session start)
     voice_model: Optional[str] = None  # e.g. ElevenLabs voice_id
