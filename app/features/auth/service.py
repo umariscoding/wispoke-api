@@ -3,12 +3,31 @@ Auth service — business logic for company authentication and settings.
 No HTTP concepts (no Request, no HTTPException). Raises domain exceptions.
 """
 
+import logging
 import re
 import secrets
 from typing import Dict, Any
 
 from google.oauth2 import id_token as google_id_token
 from google.auth.transport import requests as google_requests
+
+from app.features.availability.service import seed_default_availability
+
+_log = logging.getLogger("wispoke.auth")
+
+
+def _seed_new_company_defaults(company_id: str) -> None:
+    """Best-effort post-registration setup. Failures here MUST NOT break the
+    signup response — the user can fix any missing defaults from the dashboard.
+
+    Currently seeds:
+      • 24/7 default availability (so the voice agent can offer slots before
+        the owner has touched the availability page)
+    """
+    try:
+        seed_default_availability(company_id)
+    except Exception:
+        _log.exception("Failed to seed default availability for company=%s", company_id)
 
 from app.core.security import (
     create_company_tokens,
@@ -49,6 +68,7 @@ VALID_TONES = ["professional", "friendly", "casual", "formal", "witty"]
 def register_company(name: str, email: str, password: str) -> Dict[str, Any]:
     hashed_password = get_password_hash(password)
     company = create_company(name=name, email=email, password=hashed_password)
+    _seed_new_company_defaults(company["company_id"])
     tokens = create_company_tokens(company_id=company["company_id"], email=company["email"])
     return {"message": "Company registered successfully", "company": company, "tokens": tokens}
 
@@ -82,6 +102,7 @@ def google_auth_company(credential: str) -> Dict[str, Any]:
     # Generate an unusable password hash for Google-only accounts
     random_password = get_password_hash(secrets.token_hex(32))
     company = create_company(name=name, email=email, password=random_password)
+    _seed_new_company_defaults(company["company_id"])
     tokens = create_company_tokens(company_id=company["company_id"], email=company["email"])
     return {"message": "Company registered successfully", "company": company, "tokens": tokens}
 

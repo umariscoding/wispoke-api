@@ -131,3 +131,67 @@ def is_user_token(token: str) -> bool:
 def is_guest_token(token: str) -> bool:
     p = decode_token(token)
     return p is not None and p.get("user_type") == "guest"
+
+
+# ---------------------------------------------------------------------------
+# Service-to-service tokens (voice worker → API)
+#
+# Kept on a *separate* secret from user tokens so leaking one doesn't
+# compromise the other and so we can rotate them independently. The worker
+# mints these short-lived (default 5 min) and attaches to every callback
+# into /voice/internal/*.
+# ---------------------------------------------------------------------------
+
+_SERVICE_TOKEN_TYPE = "service"  # value of `type` claim
+
+
+def _service_secret() -> str:
+    secret = settings.voice_service_jwt_secret
+    if not secret:
+        # Fail loudly — silently falling back to the user JWT secret would
+        # collapse the security boundary the two-secret design exists to enforce.
+        raise RuntimeError(
+            "VOICE_SERVICE_JWT_SECRET is not configured. Generate one with "
+            "`python -c \"import secrets; print(secrets.token_hex(32))\"` "
+            "and set it in your .env file."
+        )
+    return secret
+
+
+def create_service_token(
+    *,
+    scope: str,
+    company_id: Optional[str] = None,
+    ttl_minutes: int = 5,
+) -> str:
+    """Mint a service token for worker → API callbacks.
+
+    `scope` narrows what the token can do (e.g. "voice:internal"). Verification
+    rejects tokens with a mismatched scope so a token minted for one purpose
+    can't be replayed against an endpoint it wasn't intended for.
+    """
+    payload: Dict = {
+        "type": _SERVICE_TOKEN_TYPE,
+        "scope": scope,
+        "exp": _now() + timedelta(minutes=ttl_minutes),
+    }
+    if company_id is not None:
+        payload["company_id"] = company_id
+    return _jwt.encode(payload, _service_secret(), algorithm=_ALGORITHM)
+
+
+def verify_service_token(token: str, *, required_scope: str) -> Optional[Dict]:
+    """Decode and validate a service token.
+
+    Returns the payload on success, None on any failure (bad signature,
+    expired, wrong scope, wrong type). Callers should treat None as 401.
+    """
+    try:
+        payload = _jwt.decode(token, _service_secret(), algorithms=[_ALGORITHM])
+    except _jwt.PyJWTError:
+        return None
+    if payload.get("type") != _SERVICE_TOKEN_TYPE:
+        return None
+    if payload.get("scope") != required_scope:
+        return None
+    return payload

@@ -27,6 +27,7 @@ from app.features.billing.router import router as billing_router
 from app.features.availability.router import router as availability_router
 from app.features.appointments.router import router as appointments_router
 from app.features.voice_agent.router import router as voice_agent_router
+from app.features.voice_internal.router import router as voice_internal_router
 
 # ---------------------------------------------------------------------------
 # App
@@ -111,6 +112,7 @@ app.include_router(billing_router)
 app.include_router(availability_router)
 app.include_router(appointments_router)
 app.include_router(voice_agent_router)
+app.include_router(voice_internal_router)
 
 # ---------------------------------------------------------------------------
 # Static / widget endpoints

@@ -1,20 +1,7 @@
 # Build config for Railway.
-#
-# Problem: pipecat-ai[webrtc] pulls in opencv-python, whose `cv2` module
-# dlopens X11/GL runtime libs at import. The slim Nixpacks Ubuntu image
-# doesn't ship them. Adding /usr/lib/x86_64-linux-gnu via LD_LIBRARY_PATH
-# breaks the Nix-built Python with vDSO errors (Ubuntu's glibc gets
-# picked up on top of Nix's).
-#
-# Fix: replace opencv-python with opencv-python-headless after the main
-# install. Headless exposes the same `cv2` module name (so pipecat's
-# `import cv2` keeps working) but ships *no* GUI/X11 bindings, so no
-# system libs are needed and the import succeeds on a stock slim image.
 
 [phases.install]
 cmds = [
   "python -m venv --copies /opt/venv",
   ". /opt/venv/bin/activate && pip install -r requirements.txt",
-  ". /opt/venv/bin/activate && pip uninstall -y opencv-python",
-  ". /opt/venv/bin/activate && pip install --no-deps opencv-python-headless==4.11.0.86",
 ]
