@@ -79,6 +79,27 @@ def get_tenant_config(
     return service.get_tenant_config(company_id)
 
 
+@router.get("/sip/resolve")
+def resolve_sip_tenant(
+    to: str,
+    _payload: Dict[str, Any] = Depends(require_service_token),
+):
+    """Map a dialed PSTN number → tenant for SIP inbound calls.
+
+    No company-scope check on the token: this is the call the worker makes
+    *before* it knows which tenant it's serving. The auth.py module already
+    documents this case ("Tokens without a company_id (broad tools) are
+    allowed through — the worker issues those when it doesn't yet know the
+    tenant, e.g. SIP inbound").
+    """
+    if not to or not to.startswith("+"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="`to` must be an E.164 number starting with '+'",
+        )
+    return service.resolve_sip_tenant(to)
+
+
 @router.get("/availability/{company_id}/slots/{date_str}")
 def get_available_slots(
     company_id: str,

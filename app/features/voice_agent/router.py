@@ -11,6 +11,7 @@ from dataclasses import asdict
 from fastapi import APIRouter, Depends
 
 from app.features.auth.dependencies import UserContext, get_current_company
+from app.features.phone_numbers import repository as phone_repo
 from app.features.voice_agent import call_log_repository, livekit_token, service
 from app.features.voice_agent.schemas import VoiceAgentSettingsRequest
 
@@ -34,6 +35,33 @@ async def update_settings(
 ):
     data = {k: v for k, v in body.model_dump().items() if v is not None}
     return service.update_settings(current_user.company_id, data)
+
+
+# ─── Phone numbers assigned to this tenant ─────────────────────────────────
+
+
+@router.get("/phone-numbers")
+async def list_phone_numbers(current_user: UserContext = Depends(get_current_company)):
+    """Return the inbound numbers wired to this company.
+
+    The dashboard's voice-agent page shows these so the operator can see
+    "people call THIS number to reach your agent." Today most tenants will
+    have 0 or 1; the response is a list so the same UI handles a future
+    "local + toll-free" pair without a redesign.
+    """
+    rows = phone_repo.list_for_company(current_user.company_id)
+    return {
+        "phone_numbers": [
+            {
+                "id": r["id"],
+                "e164": r["e164"],
+                "country": r["country"],
+                "region_label": r.get("region_label"),
+                "assigned_at": r.get("assigned_at"),
+            }
+            for r in rows
+        ]
+    }
 
 
 # ─── LiveKit token (browser test calls) ────────────────────────────────────

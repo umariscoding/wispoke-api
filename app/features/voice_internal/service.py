@@ -16,6 +16,7 @@ from app.core.exceptions import NotFoundError
 from app.features.auth.repository import get_company_by_id
 from app.features.availability import service as availability_service
 from app.features.appointments import service as appointments_service
+from app.features.phone_numbers import repository as phone_repo
 from app.features.voice_agent import service as voice_agent_service
 from app.features.voice_agent import call_log_repository as call_log_repo
 
@@ -65,6 +66,36 @@ def get_tenant_config(company_id: str) -> Dict[str, Any]:
             "llm": va_settings.get("llm_model") or "gpt-4o",
         },
         "weekly_schedule": weekly_schedule,
+    }
+
+
+# ─── SIP inbound — resolve dialed number → tenant ──────────────────────────
+
+
+def resolve_sip_tenant(e164: str) -> Dict[str, Any]:
+    """Map a dialed E.164 number to the company that owns it.
+
+    LiveKit's SIP dispatch hands the worker a metadata blob with the called
+    number (e.g. `{"called_number": "+14155551234"}`); the worker hits this
+    endpoint before building the agent so the rest of the session looks
+    identical to a browser-initiated call.
+
+    Raises NotFoundError if the number isn't in our pool or isn't assigned —
+    both cases mean "we shouldn't be receiving this call" and the worker will
+    decline the session rather than guess a tenant.
+    """
+    row = phone_repo.find_by_e164(e164)
+    if not row:
+        raise NotFoundError(f"Phone number {e164} not in pool")
+    if row.get("status") != "assigned" or not row.get("assigned_company_id"):
+        raise NotFoundError(f"Phone number {e164} is not assigned to any company")
+
+    company_id = row["assigned_company_id"]
+    va_settings = voice_agent_service.get_settings(company_id) or {}
+    return {
+        "company_id": company_id,
+        "language": va_settings.get("language") or "en",
+        "e164": e164,
     }
 
 

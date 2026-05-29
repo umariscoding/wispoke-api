@@ -36,6 +36,16 @@ class Settings(BaseSettings):
     livekit_url: Optional[str] = None
     livekit_api_key: Optional[str] = None
     livekit_api_secret: Optional[str] = None
+    # SIP URI of the LiveKit Cloud inbound trunk — Twilio's `<Dial><Sip>`
+    # webhook (see app/features/telephony) targets this. Format:
+    #   sip:<project-subdomain>.sip.livekit.cloud
+    livekit_sip_uri: Optional[str] = None
+
+    # --- Twilio (PSTN provider for inbound voice) ---
+    # Auth token is used to verify incoming webhook signatures so a forged
+    # request can't trigger calls to our SIP endpoint. When unset the
+    # signature check is logged-but-not-enforced (dev / first-boot only).
+    twilio_auth_token: Optional[str] = None
 
     # --- Voice service-to-service JWT (separate secret from user JWT) ---
     # Used by the voice worker to authenticate callbacks into /voice/internal/*.
