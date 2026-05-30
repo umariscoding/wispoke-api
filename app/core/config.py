@@ -36,20 +36,26 @@ class Settings(BaseSettings):
     livekit_url: Optional[str] = None
     livekit_api_key: Optional[str] = None
     livekit_api_secret: Optional[str] = None
-    # SIP URI of the LiveKit Cloud inbound trunk — Twilio's `<Dial><Sip>`
-    # webhook (see app/features/telephony) targets this. Format:
-    #   sip:<project-subdomain>.sip.livekit.cloud
+    # SIP URI of the LiveKit Cloud inbound trunk. The Telnyx FQDN SIP
+    # Connection points its FQDN at this host so inbound PSTN routes here.
+    # Format: sip:<project-subdomain>.sip.livekit.cloud
     livekit_sip_uri: Optional[str] = None
     # Dispatch rule that newly-purchased LiveKit phone numbers attach to. One
     # rule serves every tenant — per-tenant routing is by dialed number, which
     # the worker reads from the SIP participant's attributes.
     livekit_sip_dispatch_rule_id: Optional[str] = None
 
-    # --- Twilio (PSTN provider for inbound voice) ---
-    # Auth token is used to verify incoming webhook signatures so a forged
-    # request can't trigger calls to our SIP endpoint. When unset the
-    # signature check is logged-but-not-enforced (dev / first-boot only).
-    twilio_auth_token: Optional[str] = None
+    # --- Telephony (Telnyx) ---
+    # API key for provisioning/managing numbers via the Telnyx Numbers API.
+    telnyx_api_key: Optional[str] = None
+    # FQDN SIP Connection whose FQDN points at LIVEKIT_SIP_URI. Numbers are
+    # assigned to this connection so inbound PSTN routes straight into LiveKit.
+    telnyx_connection_id: Optional[str] = None
+    # Pre-approved Requirement Group ids (one per country/type) under our own EU
+    # company identity. We own all numbers, so customer self-serve orders ride on
+    # these — no per-customer regulatory docs. Create once via /requirement_groups.
+    # JSON map of "<COUNTRY>_<type>" → group id, e.g. {"DK_local": "...", "FR_local": "..."}.
+    telnyx_requirement_groups: dict = {}
 
     # --- Voice service-to-service JWT (separate secret from user JWT) ---
     # Used by the voice worker to authenticate callbacks into /voice/internal/*.

@@ -12,11 +12,10 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
-from app.core.config import get_settings as get_app_settings
 from app.features.auth.dependencies import UserContext, get_current_company
 from app.features.phone_numbers import repository as phone_repo
 from app.features.voice_agent import call_log_repository, livekit_token, service
-from app.features.voice_agent import livekit_phones
+from app.features.voice_agent import telnyx_phones
 from app.features.voice_agent.schemas import VoiceAgentSettingsRequest
 
 logger = logging.getLogger("wispoke.voice")
@@ -41,37 +40,36 @@ async def update_settings(
     return service.update_settings(current_user.company_id, data)
 
 
-# ─── Phone-number marketplace (LiveKit) ────────────────────────────────────
+# ─── Phone-number marketplace (Telnyx) ─────────────────────────────────────
 
 
 class ClaimNumberRequest(BaseModel):
     e164: str = Field(..., pattern=r"^\+\d{6,15}$")
-    locality: Optional[str] = None
-    region: Optional[str] = None
-    area_code: Optional[str] = None
-    country: Optional[str] = "US"
+    region_label: Optional[str] = None
+    country: Optional[str] = "DK"
+    phone_number_type: str = "local"
 
 
 @router.get("/available-numbers")
 async def available_numbers(
-    country: str = "US",
-    area_code: Optional[str] = None,
+    country: str = "DK",
+    phone_number_type: str = "local",
     limit: int = 10,
     _current_user: UserContext = Depends(get_current_company),
 ):
-    """Live search of LiveKit's number marketplace — what's available right now.
+    """Live search of Telnyx inventory — what's available right now.
 
     The dashboard shows these to a company during onboarding. The company
-    picks one, `POST /voice-agent/claim-number` purchases it and assigns it.
+    picks one, `POST /voice-agent/claim-number` orders it and assigns it.
     """
     limit = max(1, min(int(limit), 25))
     try:
-        numbers = await livekit_phones.search_numbers(
-            country_code=country, area_code=area_code, limit=limit
+        numbers = await telnyx_phones.search_available(
+            country_code=country, phone_number_type=phone_number_type, limit=limit
         )
-    except Exception as e:
-        logger.exception("LiveKit number search failed")
-        raise HTTPException(status_code=502, detail=f"Couldn't reach LiveKit: {e}")
+    except telnyx_phones.TelnyxError as e:
+        logger.exception("Telnyx number search failed")
+        raise HTTPException(status_code=502, detail=f"Couldn't reach Telnyx: {e}")
     return {"numbers": numbers}
 
 
@@ -80,15 +78,17 @@ async def claim_number(
     body: ClaimNumberRequest,
     current_user: UserContext = Depends(get_current_company),
 ):
-    """Purchase the number from LiveKit + assign it to the current company.
+    """Order the number from Telnyx + assign it to the current company.
 
     Steps:
       1. Refuse if this tenant already holds an active number (one per tenant).
-      2. Purchase via LiveKit + attach the project's dispatch rule.
+      2. Order via Telnyx, bound to our FQDN SIP Connection (TELNYX_CONNECTION_ID)
+         so inbound PSTN routes straight into the LiveKit SIP trunk.
       3. Insert into `phone_numbers` as `assigned` to this tenant.
 
-    Returns 402 if LiveKit refuses on quota — that's the "upgrade required"
-    signal the dashboard surfaces back to the user.
+    Note: DK/FR geographic orders may come back `pending` until the account's
+    regulatory bundle clears — the row is still created so the dashboard can
+    show "provisioning". The Telnyx order id is stored in `provider_sid`.
     """
     # Guard: one assigned number per tenant. Phase-2 may allow stacking but
     # for now keep the model "company has one number" so the dashboard's
@@ -100,42 +100,32 @@ async def claim_number(
             detail="This company already has an assigned number",
         )
 
-    app_settings = get_app_settings()
-    sdr_id = app_settings.livekit_sip_dispatch_rule_id
+    # We own all numbers under our own EU identity, so attach the pre-approved
+    # Requirement Group for this country/type (keyed "<COUNTRY>_<type>"). Without
+    # it, DK/FR orders sit in regulatory review; with it they activate cleanly.
+    from app.core.config import get_settings as _get_settings
+
+    groups = _get_settings().telnyx_requirement_groups or {}
+    rg_key = f"{(body.country or 'DK').upper()}_{body.phone_number_type}"
+    requirement_group_id = groups.get(rg_key)
 
     try:
-        result = await livekit_phones.purchase_number(
-            body.e164, sip_dispatch_rule_id=sdr_id
+        result = await telnyx_phones.order_number(
+            body.e164, requirement_group_id=requirement_group_id
         )
-    except livekit_phones.LiveKitQuotaExceeded:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail=(
-                "LiveKit number quota reached. Upgrade your LiveKit plan "
-                "to provision additional numbers."
-            ),
-        )
-    except Exception as e:
-        logger.exception("LiveKit number purchase failed")
-        raise HTTPException(status_code=502, detail=f"LiveKit purchase failed: {e}")
-
-    # Use the locality/region the FE saw at search-time as the human label so
-    # the dashboard reads "Los Angeles CA — 213" rather than just "+1213…".
-    label_bits = [body.locality, body.region]
-    label_bits = [b for b in label_bits if b]
-    if body.area_code:
-        label_bits.append(body.area_code)
-    region_label = " — ".join(label_bits) if label_bits else None
+    except telnyx_phones.TelnyxError as e:
+        logger.exception("Telnyx number order failed")
+        raise HTTPException(status_code=502, detail=f"Telnyx order failed: {e}")
 
     # Two-step (insert + claim) keeps the schema's status-consistency invariant
     # intact even if the second step ever fails — releasing a half-created row
     # is the easier recovery than fighting the assignment CHECK constraint.
     row = phone_repo.insert(
         e164=result["e164"],
-        country=(body.country or "US"),
-        region_label=region_label,
-        provider="livekit",
-        provider_sid=result.get("id"),
+        country=(body.country or "DK"),
+        region_label=body.region_label,
+        provider="telnyx",
+        provider_sid=result.get("order_id"),
     )
     claimed = phone_repo.claim(row["id"], current_user.company_id)
     if not claimed:
