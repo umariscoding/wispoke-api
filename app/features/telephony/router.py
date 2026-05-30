@@ -119,11 +119,11 @@ async def twilio_voice_inbound(
     # whose user-part is the dialed E.164. LiveKit matches the trunk by that
     # user-part against the `numbers` field on the inbound trunk.
     host = sip_uri[4:] if sip_uri.lower().startswith("sip:") else sip_uri
-    # Force TLS transport — LiveKit Cloud's SIP endpoint requires it (TCP/UDP
-    # on port 5060 is silently dropped). Without `;transport=tls` Twilio's
-    # `<Dial><Sip>` fails with no SIP response (silent timeout from LiveKit).
+    # Force TCP transport — LiveKit Cloud's inbound SIP endpoint accepts TCP
+    # (per LiveKit's published Twilio integration recipe). UDP/TLS get
+    # silently dropped, giving Twilio no SIP response → 0s "failed" call.
     if ";transport=" not in host.lower():
-        host = f"{host};transport=tls"
+        host = f"{host};transport=tcp"
     target = f"sip:{To}@{host}"
 
     twiml = (
