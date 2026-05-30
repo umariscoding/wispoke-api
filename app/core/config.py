@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     # webhook (see app/features/telephony) targets this. Format:
     #   sip:<project-subdomain>.sip.livekit.cloud
     livekit_sip_uri: Optional[str] = None
+    # Dispatch rule that newly-purchased LiveKit phone numbers attach to. One
+    # rule serves every tenant — per-tenant routing is by dialed number, which
+    # the worker reads from the SIP participant's attributes.
+    livekit_sip_dispatch_rule_id: Optional[str] = None
 
     # --- Twilio (PSTN provider for inbound voice) ---
     # Auth token is used to verify incoming webhook signatures so a forged
