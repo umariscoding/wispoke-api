@@ -154,6 +154,8 @@ def finalize_call_log(
     appointment_id: Optional[str] = None,
     latency_metrics: Optional[Dict[str, Any]] = None,
     started_at_iso: Optional[str] = None,
+    recording_url: Optional[str] = None,
+    recording_format: Optional[str] = None,
 ) -> None:
     started_at: Optional[datetime] = None
     if started_at_iso:
@@ -168,4 +170,6 @@ def finalize_call_log(
         started_at=started_at,
         appointment_id=appointment_id,
         latency_metrics=latency_metrics,
+        recording_url=recording_url,
+        recording_format=recording_format,
     )

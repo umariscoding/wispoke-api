@@ -6,7 +6,7 @@ on every inbound call to resolve which tenant owns the dialed number. Keep it
 trivial — one indexed lookup, no joins.
 
 Pool management (claim/release) lives here too but isn't wired to a router yet;
-phase 2 adds the admin endpoints once Twilio is upgraded off trial.
+phase 2 adds the admin endpoints for the Telnyx number pool.
 """
 
 from __future__ import annotations
@@ -90,7 +90,7 @@ def insert(
     e164: str,
     country: str,
     region_label: Optional[str] = None,
-    provider: str = "twilio",
+    provider: str = "telnyx",
     provider_sid: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Add a freshly purchased number to the pool as 'available'."""

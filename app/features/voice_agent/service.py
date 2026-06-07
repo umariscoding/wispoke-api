@@ -7,9 +7,14 @@ the repository which transparently drops any unknown columns (lets the
 dashboard ship new fields before migrations land).
 """
 
-from typing import Any, Dict
+import logging
+from typing import Any, Dict, Optional
 
+from app.core.config import settings
+from app.core.database import db
 from app.features.voice_agent import repository as repo
+
+logger = logging.getLogger("wispoke.voice")
 
 
 # Columns the DB used to have but the v2 stack no longer surfaces. If anything
@@ -59,3 +64,28 @@ def get_settings(company_id: str) -> Dict[str, Any]:
 def update_settings(company_id: str, data: Dict[str, Any]) -> Dict[str, Any]:
     cleaned = _strip_legacy(data)
     return _strip_legacy(repo.upsert_settings(company_id, **cleaned))
+
+
+# ─── Call recordings ────────────────────────────────────────────────────────
+
+
+def sign_recording_url(object_key: str, *, expires_in: int = 3600) -> Optional[str]:
+    """Mint a short-lived signed URL for a recording in the private bucket.
+
+    Recordings live in a private Supabase Storage bucket (they're call audio —
+    PII), so we never expose a permanent URL. The worker stores only the object
+    key; the dashboard calls this per-playback to get a temporary link.
+
+    Returns None on failure (e.g. object missing) so the caller can 404.
+    """
+    try:
+        res = db.storage.from_(settings.recording_bucket).create_signed_url(
+            object_key, expires_in
+        )
+        if isinstance(res, dict):
+            # supabase-py has used a few key spellings across versions.
+            return res.get("signedURL") or res.get("signedUrl") or res.get("signed_url")
+        return None
+    except Exception:
+        logger.exception("failed to sign recording url for key=%s", object_key)
+        return None
