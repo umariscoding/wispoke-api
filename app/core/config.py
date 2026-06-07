@@ -62,6 +62,12 @@ class Settings(BaseSettings):
     # Generate with: python -c "import secrets; print(secrets.token_hex(32))"
     voice_service_jwt_secret: Optional[str] = None
 
+    # --- Call recordings (private Supabase Storage bucket) ---
+    # The voice worker's egress uploads audio here (over S3); the dashboard
+    # mints short-lived signed URLs to play it back. Must match
+    # RECORDING_BUCKET in wispoke-voice/.env.
+    recording_bucket: str = "call-recordings"
+
     # --- Email (Resend) ---
     # When unset, send_email is a no-op so the app still runs in dev.
     resend_api_key: Optional[str] = None

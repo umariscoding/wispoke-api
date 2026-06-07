@@ -209,3 +209,24 @@ async def list_call_logs(
         "offset": offset,
         "has_more": offset + len(items) < page["total"],
     }
+
+
+@router.get("/call-logs/{call_log_id}/recording")
+async def get_call_recording_url(
+    call_log_id: str,
+    current_user: UserContext = Depends(get_current_company),
+):
+    """Return a short-lived signed URL to play back this call's recording.
+
+    The recording lives in a private bucket; `recording_url` on the row is just
+    the object key. We verify the call belongs to the caller's company, then
+    mint a temporary signed URL (1h) — never a permanent link.
+    """
+    row = call_log_repository.get_call_log(call_log_id, current_user.company_id)
+    if not row or not row.get("recording_url"):
+        raise HTTPException(status_code=404, detail="No recording for this call")
+
+    url = service.sign_recording_url(row["recording_url"])
+    if not url:
+        raise HTTPException(status_code=502, detail="Couldn't sign recording URL")
+    return {"url": url, "format": row.get("recording_format")}

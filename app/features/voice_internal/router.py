@@ -34,6 +34,8 @@ class CallLogFinalizeRequest(BaseModel):
     appointment_id: Optional[str] = None
     latency_metrics: Optional[Dict[str, Any]] = None
     started_at: Optional[str] = None  # ISO 8601
+    recording_url: Optional[str] = None  # object key in the recordings bucket
+    recording_format: Optional[str] = None  # e.g. 'ogg'
 
 
 class AppointmentCreateRequest(BaseModel):
@@ -156,5 +158,7 @@ def finalize_call_log(
         appointment_id=body.appointment_id,
         latency_metrics=body.latency_metrics,
         started_at_iso=body.started_at,
+        recording_url=body.recording_url,
+        recording_format=body.recording_format,
     )
     return {"ok": True}

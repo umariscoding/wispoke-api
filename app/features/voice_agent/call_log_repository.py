@@ -80,6 +80,28 @@ def list_call_logs(
         return {"items": [], "total": 0}
 
 
+def get_call_log(call_log_id: str, company_id: str) -> Optional[Dict[str, Any]]:
+    """Fetch a single call log scoped to its owning company.
+
+    Returns None if the row doesn't exist or belongs to another company —
+    callers (e.g. the recording-URL signer) use this as the authz check.
+    """
+    try:
+        res = (
+            db.table("voice_call_logs")
+            .select("*")
+            .eq("call_log_id", call_log_id)
+            .eq("company_id", company_id)
+            .limit(1)
+            .execute()
+        )
+        rows = res.data or []
+        return rows[0] if rows else None
+    except Exception:
+        logger.exception("voice_call_logs get failed for call_log_id=%s", call_log_id)
+        return None
+
+
 def finalize_call_log(
     call_log_id: str,
     *,
